@@ -117,3 +117,23 @@ def test_prune_after_stitch_and_refetch(tmp_path, monkeypatch):
     # Toggling pruning is not an input: the fetch key stays the same.
     off = dataclasses.replace(cfg, fetch=dataclasses.replace(cfg.fetch, prune_after_stitch=False))
     assert pipeline.stage_fetch(off, 5) == key
+
+
+def test_thread_count_is_not_part_of_the_search_key(tmp_path, monkeypatch):
+    import dataclasses
+
+    from scout import pipeline
+    from scout.config import load_config
+
+    cfg = load_config(overrides={"run": {"name": "k", "results_dir": str(tmp_path)}})
+    keys = []
+    monkeypatch.setattr(pipeline, "_run_stage", lambda name, out, key, force, produce: (key, 0))
+    for threads in (0, 2):
+        c = dataclasses.replace(
+            cfg,
+            search=dataclasses.replace(
+                cfg.search, periodic=dataclasses.replace(cfg.search.periodic, threads=threads)
+            ),
+        )
+        keys.append(pipeline.stage_search(c, 1, "up"))
+    assert keys[0] == keys[1]

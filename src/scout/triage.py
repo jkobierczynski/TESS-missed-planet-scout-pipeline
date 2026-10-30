@@ -12,6 +12,9 @@ catalogues, e.g. the TESS EB catalogue or a VSX extract):
 - ``new_on_known_host``: the star has known objects, but not at this period.
 - ``new``: nothing known on or near the star.
 
+Signals that are not known but fail a cheap check are then demoted to
+``duplicate``, ``too_large`` or ``inverted`` (see :func:`cheap_kills`).
+
 A TOI whose TFOPWG disposition is FP (false positive) or EB is reported as
 such, since a known false positive at our period is as good as a kill.
 
@@ -313,6 +316,53 @@ def classify(
     }
 
 
+def _too_long(r: dict[str, Any], factor: float) -> bool:
+    from scout.inject import transit_duration_hours
+
+    rad, mass = _num(r.get("radius_rsun")), _num(r.get("mass_msun"))
+    p, dur = _num(r.get("period_days")), _num(r.get("duration_hours"))
+    if factor <= 0 or not all(np.isfinite(x) and x > 0 for x in (rad, mass, p, dur)):
+        return False
+    rp_rs = _num(r.get("rp_rs"))
+    k = rp_rs if np.isfinite(rp_rs) else 0.1
+    return dur > factor * transit_duration_hours(p, k, 0.0, rad, mass)
+
+
+def cheap_kills(rows: list[dict[str, Any]], tc: TriageConfig) -> None:
+    """Demote "new" signals that cheap checks already explain (design §3.7).
+
+    - ``duplicate``: the same star has an earlier detection at this period
+      (or an alias of it): the search found the same signal again after masking.
+    - ``too_large``: implied companion radius above ``max_radius_rearth``
+      (about 2 R_Jup): an eclipsing binary, not a planet (checklist item 7).
+    - ``too_long``: longer than ``max_duration_factor`` × the longest
+      central transit a circular orbit allows at this period around this star
+      (checklist item 8): stellar variability or a blend, not a transit.
+    - ``inverted``: the flux-inverted search did at least as well, so the
+      dips are as likely systematics or variability as transits.
+
+    The full §6 checklist still runs on whatever stays "new".
+    """
+    seen: dict[int, list[float]] = {}
+    for r in sorted(rows, key=lambda r: (r["tic"], r["index"])):
+        if r["triage"] == "below_threshold":
+            continue
+        earlier = seen.setdefault(r["tic"], [])
+        dup = any(period_match(r["period_days"], p, tc.period_tolerance) for p in earlier)
+        earlier.append(r["period_days"])
+        if r["triage"] not in ("new", "new_on_known_host"):
+            continue
+        rp, inv = _num(r.get("rp_rearth")), _num(r.get("inverted_sde"))
+        if dup:
+            r["triage"] = "duplicate"
+        elif np.isfinite(rp) and rp > tc.max_radius_rearth:
+            r["triage"] = "too_large"
+        elif _too_long(r, tc.max_duration_factor):
+            r["triage"] = "too_long"
+        elif np.isfinite(inv) and inv >= r["sde"]:
+            r["triage"] = "inverted"
+
+
 # --- driver ----------------------------------------------------------------------
 
 
@@ -346,6 +396,7 @@ def collect_detections(cfg: Config) -> list[dict[str, Any]]:
             row["tmag"] = star.get("tmag")
             row["teff_k"] = star.get("teff_k")
             row["radius_rsun"] = star.get("radius_rsun")
+            row["mass_msun"] = star.get("mass_msun")
             row["ra_deg"] = star.get("ra_deg")
             row["dec_deg"] = star.get("dec_deg")
             r = star.get("radius_rsun")
@@ -387,6 +438,7 @@ def triage_run(cfg: Config) -> dict[str, Any]:
                 match_ratio=float("nan"),
                 match_sep_arcsec=float("nan"),
             )
+    cheap_kills(rows, cfg.triage)
     out = cfg.run_dir / "candidates.parquet"
     out.parent.mkdir(parents=True, exist_ok=True)
     if rows:

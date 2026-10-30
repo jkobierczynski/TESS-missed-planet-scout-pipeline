@@ -19,9 +19,13 @@ from scout.report.star import _CSS
 ORDER = {
     "new": 0,
     "new_on_known_host": 1,
-    "neighbour": 2,
-    "known_false_positive": 3,
-    "known": 4,
+    "inverted": 2,
+    "too_large": 3,
+    "too_long": 3,
+    "neighbour": 4,
+    "known_false_positive": 5,
+    "known": 6,
+    "duplicate": 7,
 }
 
 _JS = """

@@ -150,3 +150,43 @@ def test_batch_and_triage_on_synthetic_stars(tmp_path, monkeypatch, capsys):
 
     tab = pq.read_table(tmp_path / "results/b/candidates.parquet").to_pylist()
     assert {r["tic"]: r["triage"] for r in tab}[11] == "known"
+
+
+def test_cheap_kills():
+    from scout.triage import cheap_kills
+
+    def row(tic, index, period, triage="new", rp=2.0, sde=20.0, inv=8.0, dur=3.0):
+        return {
+            "duration_hours": dur,
+            "radius_rsun": 1.0,
+            "mass_msun": 1.0,
+            "rp_rs": 0.02,
+            "tic": tic,
+            "index": index,
+            "period_days": period,
+            "triage": triage,
+            "rp_rearth": rp,
+            "sde": sde,
+            "inverted_sde": inv,
+        }
+
+    rows = [
+        row(1, 1, 3.0),
+        row(1, 2, 6.0),  # 2× alias of #1: the same signal again
+        row(2, 1, 1.6, rp=60.0),  # 0.5 R☉ companion
+        row(3, 1, 0.9, sde=20.0, inv=25.0, dur=1.5),
+        row(4, 1, 5.0, triage="known", rp=60.0),  # known stays known
+        row(5, 1, 7.0, triage="below_threshold"),
+        # 10 h at 1.8 d around the Sun: a central transit lasts at most ~3.3 h.
+        row(6, 1, 1.8, dur=10.0),
+    ]
+    cheap_kills(rows, TriageConfig())
+    assert [r["triage"] for r in rows] == [
+        "new",
+        "duplicate",
+        "too_large",
+        "inverted",
+        "known",
+        "below_threshold",
+        "too_long",
+    ]

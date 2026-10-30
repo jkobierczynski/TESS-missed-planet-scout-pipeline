@@ -4,8 +4,8 @@ Find transiting exoplanet candidates in public TESS data that the official
 pipelines (SPOC, QLP) missed, vet them, and package the survivors as ExoFOP
 community TOIs. Design and roadmap: [DESIGN.md](DESIGN.md).
 
-**Status:** M0 (skeleton) and M1 (single star end to end) done, M2
-(injection-recovery and threshold calibration) in progress. Detections are
+**Status:** M0–M2 done (skeleton, single star end to end, injection-recovery
+calibration: SDE 17 / SNR 7). M3 (batch CVZ run and triage) in progress. Detections are
 *not vetted*: the §6 checklist arrives in M5.
 
 ## Install
@@ -48,6 +48,23 @@ scout run   --run demo 999000001
 
 Presets: `quiet`, `hot-jupiter`, `sub-neptune`, `m-dwarf`.
 
+### Batch run and triage (M3)
+
+```bash
+scout targets -c config/cvz-north.toml               # TIC cone around the ecliptic pole -> targets.csv
+scout batch   -c config/cvz-north.toml --workers 4   # every target to its report; rerun to resume
+scout triage  -c config/cvz-north.toml               # known? -> candidates.parquet, summary.html
+```
+
+`targets` applies the `[targets]` cuts and sorts brightest first
+(`--max N` keeps the first N). `batch` skips finished stars and retries failed
+ones, logging each star to `batch.jsonl`; with `fetch.prune_after_stitch` the
+FITS (~20 MB per star) are deleted once stitched. `triage` cross-matches every
+detection above threshold with the ExoFOP TOI and CTOI lists and the NASA
+Exoplanet Archive, by TIC and period (including ½, 2, ⅓, 3 × aliases) and by
+position for blends from neighbours within 120″. Local catalogues such as the
+TESS EB catalogue can be added through `triage.extra_catalogs`.
+
 ### Calibrating the search (M2)
 
 Thresholds are measured, not guessed (design §3.2, §5). On host stars with no
@@ -89,6 +106,9 @@ results/<run>/
   stars/TIC<id>/fetch.json    chosen MAST files + TIC stellar parameters
   stars/TIC<id>/stitched.parquet, flat.parquet, search.json
   reports/TIC<id>.html
+  targets.csv, batch.jsonl     target list and per-star batch log
+  candidates.parquet           every detection with its triage verdict
+  summary.html                 sortable overview, links to the star reports
   inject/TIC<id>/             injections.jsonl, nulls.jsonl (scout inject)
   calibration/                calibration.html, calibration.json (scout calibrate)
 ```

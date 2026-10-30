@@ -184,6 +184,11 @@ class TriageConfig:
     # Known objects on other stars within this radius sharing the period mark
     # the detection as a likely blend (21″ TESS pixels: 120″ ≈ 6 px).
     neighbour_radius_arcsec: float = 120.0
+    # Implied radius above this (≈ 2 R_Jup) marks a "new" signal as an EB.
+    max_radius_rearth: float = 22.4
+    # Duration above this × the longest central transit the TIC R*, M* allow
+    # at the detected period marks a "new" signal as variability. 0 disables.
+    max_duration_factor: float = 1.5
     # Extra local catalogues (CSV with tic, period_days, name, kind columns),
     # e.g. the TESS EB catalogue or VSX extracts.
     extra_catalogs: tuple[str, ...] = ()

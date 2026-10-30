@@ -75,6 +75,8 @@ snr_threshold = 7.0
 max_age_days = 7.0
 period_tolerance = 0.01
 neighbour_radius_arcsec = 120.0
+max_radius_rearth = 22.4       # ≈ 2 R_Jup: bigger is an EB
+max_duration_factor = 1.5      # × longest transit the star allows at that period
 extra_catalogs = []            # local CSVs: tic, period_days, name, kind
 
 [report]

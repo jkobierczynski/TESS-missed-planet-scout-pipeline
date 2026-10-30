@@ -199,7 +199,8 @@ def stage_detrend(cfg: Config, tic: int, upstream: str, force: bool = False) -> 
 def stage_search(cfg: Config, tic: int, upstream: str, force: bool = False) -> str:
     sd = star_dir(cfg, tic)
     out = sd / "search.json"
-    key = _key("search", cfg.search.periodic, upstream)
+    # Thread count changes speed, not results; batch runs split threads between workers.
+    key = _key("search", dataclasses.replace(cfg.search.periodic, threads=0), upstream)
 
     def produce() -> None:
         res = search_periodic(LightCurve.read(sd / "flat.parquet"), cfg.search.periodic)
