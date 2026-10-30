@@ -1,0 +1,82 @@
+# M2 injection-recovery calibration for the northern CVZ.
+# Same detrend and search settings as cvz-north.toml; hosts are non-TOI CVZ
+# dwarfs with 2-min SPOC data in TESS year 2 (sectors 14–26).
+#
+#   scout inject -c config/m2-calibration.toml <host TICs...>
+#   scout calibrate -c config/m2-calibration.toml
+
+[run]
+name = "m2-calibration"
+results_dir = "results"
+cache_dir = "cache"
+
+[targets]                      # used from M3
+ecliptic_lat_min_deg = 78.0
+tmag_max = 13.0
+teff_min_k = 2500.0
+teff_max_k = 7500.0
+
+[fetch]
+sources = ["SPOC", "TESS-SPOC", "QLP"]   # preference order per sector
+cadences_s = [120, 200, 600, 1800]
+timeout_s = 300.0
+sectors = [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26]
+
+[fetch.flux_columns]
+SPOC = "PDCSAP_FLUX"
+TESS-SPOC = "PDCSAP_FLUX"
+QLP = "SAP_FLUX"               # KSPSAP is already detrended; we detrend ourselves
+
+[stitch]
+quality_bitmask = 175          # SPOC "default" mask
+mask_momentum_dumps = true
+momentum_dump_bit = 32
+momentum_dump_pad_hours = 0.5
+
+[detrend]
+method = "biweight"
+window_factor = 3.0            # window = 3 × max transit duration
+max_transit_duration_hours = 12.0
+edge_cutoff_days = 0.0
+break_tolerance_days = 0.5
+upper_sigma_clip = 4.0
+rotation_prewhiten = true      # fit out spot modulation with P_rot < 4 d first
+rotation_max_period_days = 4.0
+rotation_min_amplitude = 0.002
+rotation_term_min_amplitude = 0.0003
+rotation_max_terms = 4
+rotation_harmonics = 3
+
+[search.periodic]
+period_min_days = 0.5
+period_max_baseline_fraction = 0.5
+period_max_days = 0.0          # 0 = no absolute cap
+min_transits = 2
+oversampling_factor = 3
+duration_grid_step = 1.1
+sde_threshold = 9.0            # PROVISIONAL until M2 injection-recovery
+snr_threshold = 7.0            # PROVISIONAL until M2 injection-recovery
+max_signals = 3
+threads = 0
+bin_minutes = 10.0
+run_inverted = true
+
+[search.single]                # used from M4
+duration_min_hours = 1.0
+duration_max_hours = 15.0
+snr_threshold = 7.0
+
+[inject]
+n_injections = 100
+period_min_days = 0.5
+period_max_days = 0.0          # 0 = search limit (half the baseline)
+radius_min_rearth = 0.7
+radius_max_rearth = 8.0
+impact_max = 0.9
+period_tolerance = 0.01
+n_scrambles = 20
+false_alarm_target = 0.01
+seed = 0
+
+[report]
+dpi = 110

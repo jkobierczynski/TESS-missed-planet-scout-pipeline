@@ -61,9 +61,12 @@ def select_products(cands: list[Candidate], cfg: FetchConfig) -> list[Product]:
     """Pick one product per sector: preferred source first, then shortest cadence."""
     rank = {s: i for i, s in enumerate(cfg.sources)}
     allowed = set(cfg.cadences_s)
+    sectors = set(cfg.sectors)
     best: dict[int, Candidate] = {}
     for c in cands:
         if c.source not in rank or c.cadence_s not in allowed:
+            continue
+        if sectors and c.sector not in sectors:
             continue
         cur = best.get(c.sector)
         key = (rank[c.source], c.cadence_s, c.filename)

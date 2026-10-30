@@ -129,6 +129,26 @@ def _finite(x: Any, default: float = float("nan")) -> float:
     return v if np.isfinite(v) else default
 
 
+def period_may_be_double(r: Any) -> bool:
+    """True when every transit with data falls on epochs of the same parity.
+
+    Then the fold cannot tell P from 2P: the "missing" half of the transits was
+    simply never observed. TLS's own warning ("true period may be twice") fires
+    whenever a third of the predicted transits have no data, which on sparse
+    multi-year sector coverage is nearly always, so it is kept in ``warnings``
+    but not used as a flag.
+    """
+    times = np.atleast_1d(np.asarray(r.transit_times, dtype=float))
+    counts = np.atleast_1d(np.asarray(r.per_transit_count, dtype=float))
+    period, t0 = _finite(r.period), _finite(r.T0)
+    if len(times) != len(counts) or not (np.isfinite(period) and np.isfinite(t0)):
+        return False
+    epochs = np.rint((times[counts > 0] - t0) / period).astype(np.int64)
+    if len(epochs) < 2:
+        return False
+    return len(np.unique(epochs % 2)) == 1
+
+
 def search_periodic(lc: LightCurve, cfg: PeriodicSearchConfig) -> PeriodicSearchResult:
     from transitleastsquares import transit_mask
 
@@ -148,7 +168,7 @@ def search_periodic(lc: LightCurve, cfg: PeriodicSearchConfig) -> PeriodicSearch
         flags = []
         if n_tr < cfg.min_transits:
             flags.append("too_few_transits")
-        if any("twice the given period" in w for w in r.scout_warnings):
+        if period_may_be_double(r):
             flags.append("period_may_be_double")
         per_depth = [
             (1.0 - _finite(d)) * 1e6 for d in np.atleast_1d(r.transit_depths) if np.isfinite(d)
