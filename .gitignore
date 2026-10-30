@@ -1,0 +1,28 @@
+# Design principle 4: code public, results private.
+# Candidates, reports and downloaded data never go into git until submitted as CTOIs.
+/results/
+/cache/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# TLS / numba caches
+*.nbi
+*.nbc
+
+# Editors
+.idea/
+.vscode/
+*.swp
+.DS_Store

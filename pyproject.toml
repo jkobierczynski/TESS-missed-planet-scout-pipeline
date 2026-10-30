@@ -1,0 +1,58 @@
+[build-system]
+requires = ["hatchling>=1.21"]
+build-backend = "hatchling.build"
+
+[project]
+name = "scout"
+version = "0.1.0"
+description = "Find, vet and package TESS transit candidates missed by SPOC and QLP"
+readme = "README.md"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+authors = [{ name = "Jurgen Kobierczynski" }]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Astronomy",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+]
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "astropy>=6.0",
+    "pyarrow>=14",
+    "wotan>=1.10",
+    "transitleastsquares>=1.32",
+    "matplotlib>=3.8",
+]
+
+[project.optional-dependencies]
+# MAST access. Not needed for tests or for working on already-cached data.
+mast = ["astroquery>=0.4.7"]
+# Physical (limb-darkened) transit models for synthetic data and injection.
+# Without it the generator falls back to a trapezoid model.
+models = ["batman-package>=2.4.9"]
+dev = ["pytest>=8", "ruff>=0.5"]
+
+[project.scripts]
+scout = "scout.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/scout"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "NPY", "RUF"]
+ignore = ["RUF001", "RUF002", "RUF003"]  # Greek letters and × in docstrings are fine
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = [
+    "slow: longer tests (TLS on synthetic multi-sector data)",
+    "network: needs MAST access; skipped unless SCOUT_NETWORK_TESTS=1",
+]
