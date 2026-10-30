@@ -149,6 +149,114 @@ def period_may_be_double(r: Any) -> bool:
     return len(np.unique(epochs % 2)) == 1
 
 
+def _box_depth(
+    t: np.ndarray, y: np.ndarray, dy: np.ndarray, period: float, t0: float, dur_days: float, k: int
+) -> tuple[float, float, float, float, np.ndarray]:
+    """Box depths at period ``period`` split by epoch: n % k == 0 (old) vs the rest (new).
+
+    Returns (depth_old, err_old, depth_new, err_new, epochs_with_data).
+    """
+    phase = (t - t0) / period
+    n = np.rint(phase).astype(np.int64)
+    intr = np.abs(phase - n) * period < 0.5 * dur_days
+    w = 1.0 / np.square(dy)
+    out = []
+    for sel in (intr & (n % k == 0), intr & (n % k != 0)):
+        if not sel.any():
+            out += [float("nan"), float("inf")]
+            continue
+        wsum = float(np.sum(w[sel]))
+        out += [1.0 - float(np.sum(w[sel] * y[sel]) / wsum), 1.0 / np.sqrt(wsum)]
+    return out[0], out[1], out[2], out[3], np.unique(n[intr])
+
+
+def resolve_submultiple(
+    t: np.ndarray,
+    y: np.ndarray,
+    dy: np.ndarray,
+    period: float,
+    t0: float,
+    duration_hours: float,
+    kmax: int,
+    period_min: float,
+) -> int:
+    """Largest k ≤ kmax for which the true period looks like period / k.
+
+    TLS cannot fit a transit longer than 12 % of the trial period (a constant
+    compiled into it). Short-period planets around large stars have longer
+    transits than that, so TLS reports 2× or 3× the period instead, fitting
+    every second or third transit. Here the epochs that P/k adds are checked:
+    if they carry a significant dip of comparable depth, the period is P/k.
+    """
+    dur = duration_hours / 24.0
+    best = 1
+    for k in range(2, kmax + 1):
+        pk = period / k
+        if pk < period_min or dur >= 0.5 * pk:
+            continue
+        d_old, e_old, d_new, e_new, _ = _box_depth(t, y, dy, pk, t0, dur, k)
+        if not (np.isfinite(d_old) and np.isfinite(d_new)) or d_old <= 0:
+            continue
+        significant = d_new / e_new >= 5.0
+        comparable = abs(d_new - d_old) <= max(3.0 * np.hypot(e_new, e_old), 0.3 * d_old)
+        if significant and comparable:
+            best = k
+    return best
+
+
+def _apply_submultiple(
+    det: Detection, k: int, t: np.ndarray, y: np.ndarray, dy: np.ndarray
+) -> Detection:
+    """Rewrite a detection for period P/k, recomputing what depends on the period."""
+    p = det.period_days / k
+    dur = det.duration_hours / 24.0
+    phase = (t - det.t0_btjd) / p
+    n = np.rint(phase).astype(np.int64)
+    intr = np.abs(phase - n) * p < 0.5 * dur
+    epochs = np.unique(n[intr])
+    w = 1.0 / np.square(dy)
+    per_depth, odd, even = [], [], []
+    for e in epochs:
+        sel = intr & (n == e)
+        d = 1.0 - float(np.sum(w[sel] * y[sel]) / np.sum(w[sel]))
+        per_depth.append(d * 1e6)
+        (odd if e % 2 else even).append((d, 1.0 / np.sqrt(np.sum(w[sel]))))
+
+    def mean(xs: list[tuple[float, float]]) -> tuple[float, float]:
+        if not xs:
+            return float("nan"), float("inf")
+        v = np.array(xs)
+        ww = 1.0 / np.square(v[:, 1])
+        return float(np.sum(ww * v[:, 0]) / np.sum(ww)), float(1.0 / np.sqrt(np.sum(ww)))
+
+    (do, eo), (de, ee) = mean(odd), mean(even)
+    depth = 1.0 - float(np.mean(y[intr]))
+    # Same SNR definition as TLS: mean depth / out-of-transit scatter × √N_in.
+    oot = np.abs(phase - n) * p > dur
+    snr = depth / float(np.std(y[oot])) * np.sqrt(int(intr.sum())) if oot.any() else det.snr
+    tmin, tmax = float(np.min(t)), float(np.max(t))
+    first = int(np.ceil((tmin - det.t0_btjd) / p))
+    last = int(np.floor((tmax - det.t0_btjd) / p))
+    det.period_days = p
+    det.period_err_days = det.period_err_days / k
+    det.depth_ppm = depth * 1e6
+    det.snr = float(snr)
+    det.n_transits = len(epochs)
+    det.n_transits_expected = max(last - first + 1, len(epochs))
+    det.odd_even_sigma = (
+        abs(do - de) / (eo + ee) if np.isfinite(do) and np.isfinite(de) else float("nan")
+    )
+    det.transit_times_btjd = [det.t0_btjd + e * p for e in epochs]
+    det.per_transit_depth_ppm = per_depth
+    det.flags = [f for f in det.flags if f != "period_may_be_double"]
+    det.flags.append(f"period_divided_by_{k}")
+    det.warnings.append(
+        f"TLS reported {det.period_days * k:.5f} d; the epochs in between show the same dip, "
+        f"so the period is 1/{k} of that (TLS caps duration at 12 % of the period)."
+    )
+    return det
+
+
 def search_periodic(lc: LightCurve, cfg: PeriodicSearchConfig) -> PeriodicSearchResult:
     from transitleastsquares import transit_mask
 
@@ -194,6 +302,25 @@ def search_periodic(lc: LightCurve, cfg: PeriodicSearchConfig) -> PeriodicSearch
             flags=flags,
             warnings=list(r.scout_warnings),
         )
+        if cfg.resolve_submultiples and np.isfinite(det.period_days):
+            k = resolve_submultiple(
+                t,
+                y,
+                dy,
+                det.period_days,
+                det.t0_btjd,
+                det.duration_hours,
+                cfg.submultiple_max,
+                pmin,
+            )
+            if k > 1:
+                det = _apply_submultiple(det, k, t, y, dy)
+                passes = (
+                    sde >= cfg.sde_threshold
+                    and det.snr >= cfg.snr_threshold
+                    and det.n_transits >= cfg.min_transits
+                )
+                det.passes_threshold = passes
         detections.append(det)
         if not passes:
             break
@@ -217,6 +344,7 @@ def search_periodic(lc: LightCurve, cfg: PeriodicSearchConfig) -> PeriodicSearch
         "min_transits": cfg.min_transits,
         "oversampling_factor": cfg.oversampling_factor,
         "duration_grid_step": cfg.duration_grid_step,
+        "submultiple_max": cfg.submultiple_max if cfg.resolve_submultiples else 1,
     }
     return PeriodicSearchResult(
         detections=detections,

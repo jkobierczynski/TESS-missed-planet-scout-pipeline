@@ -116,6 +116,11 @@ class PeriodicSearchConfig:
     # 0 searches at native cadence. Never applied silently (design §4).
     bin_minutes: float = 10.0
     run_inverted: bool = True
+    # TLS cannot fit transits longer than 12 % of the period, so short-period
+    # planets around large stars come back at 2× or 3× the period. After each
+    # detection, P/2 … P/submultiple_max are checked against the data.
+    resolve_submultiples: bool = True
+    submultiple_max: int = 5
 
 
 @dataclass(frozen=True)
@@ -278,6 +283,8 @@ def _validate(cfg: Config) -> None:
         errors.append("search.periodic.period_max_baseline_fraction must be in (0, 1]")
     if p.min_transits < 2:
         errors.append("search.periodic.min_transits must be ≥ 2 (single events go to M4)")
+    if p.submultiple_max < 1:
+        errors.append("search.periodic.submultiple_max must be ≥ 1")
     if p.max_signals < 1:
         errors.append("search.periodic.max_signals must be ≥ 1")
     i = cfg.inject
