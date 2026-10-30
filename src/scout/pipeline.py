@@ -44,7 +44,11 @@ STAGES = ("fetch", "stitch", "detrend", "search", "report")
 
 
 class StageError(RuntimeError):
-    pass
+    """A stage failed; ``stage`` names which one."""
+
+    def __init__(self, message: str, stage: str | None = None) -> None:
+        super().__init__(message)
+        self.stage = stage
 
 
 def star_dir(cfg: Config, tic: int) -> Path:
@@ -86,7 +90,13 @@ def _run_stage(
         return key, False
     log.info("%s: running -> %s", name, out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    produce()
+    try:
+        produce()
+    except StageError as exc:
+        exc.stage = exc.stage or name
+        raise
+    except Exception as exc:
+        raise StageError(str(exc), stage=name) from exc
     _write_stamp(out, key)
     return key, True
 

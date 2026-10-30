@@ -135,7 +135,8 @@ def _cmd_stage(cfg: Config, args: argparse.Namespace) -> int:
             summary = run_star(cfg, tic, until=until, force=args.force)
         except Exception as exc:
             log.debug("TIC %s failed", tic, exc_info=True)
-            print(f"TIC {tic}: FAILED in {until}: {exc}", file=sys.stderr)
+            stage = getattr(exc, "stage", None) or until
+            print(f"TIC {tic}: FAILED in {stage}: {exc}", file=sys.stderr)
             status[tic] = f"failed: {exc}"
             rc = 1
             continue

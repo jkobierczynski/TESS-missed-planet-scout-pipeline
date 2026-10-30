@@ -82,6 +82,7 @@ def test_failed_star_recorded(tmp_path, monkeypatch, capsys):
 
     monkeypatch.setattr(f, "fetch", boom)
     assert main(["run", "--run", "t", "77"]) == 1
-    assert "FAILED" in capsys.readouterr().err
+    # The message names the stage that failed, not the last requested one.
+    assert "FAILED in fetch: offline" in capsys.readouterr().err
     run_json = json.loads((tmp_path / "results/t/run.json").read_text())
     assert run_json["invocations"][-1]["status"]["77"].startswith("failed")

@@ -107,3 +107,42 @@ def test_read_qlp_like(tmp_path, rng):
     assert lc.quality[5] == 128 and lc.quality[6] == 0
     # No error column: estimated from point-to-point scatter.
     assert lc.flux_err[0] == pytest.approx(1e-3, rel=0.25)
+
+
+def test_with_retries_recovers_from_dropped_connection():
+    from scout.fetch import _with_retries
+
+    calls = []
+
+    def flaky():
+        calls.append(1)
+        if len(calls) < 3:
+            raise ConnectionError("proxy closed the connection")
+        return "ok"
+
+    assert _with_retries("test", flaky, delays=(0.0, 0.0, 0.0)) == "ok"
+    assert len(calls) == 3
+
+
+def test_with_retries_gives_up_and_reraises():
+    from scout.fetch import _with_retries
+
+    def broken():
+        raise TimeoutError("still down")
+
+    with pytest.raises(TimeoutError, match="still down"):
+        _with_retries("test", broken, delays=(0.0,))
+
+
+def test_with_retries_does_not_retry_other_errors():
+    from scout.fetch import _with_retries
+
+    calls = []
+
+    def bad():
+        calls.append(1)
+        raise LookupError("TIC not found")
+
+    with pytest.raises(LookupError):
+        _with_retries("test", bad, delays=(0.0, 0.0))
+    assert len(calls) == 1
