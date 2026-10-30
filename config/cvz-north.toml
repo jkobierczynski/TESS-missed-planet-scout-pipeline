@@ -50,8 +50,8 @@ period_max_days = 0.0          # 0 = no absolute cap
 min_transits = 2
 oversampling_factor = 3
 duration_grid_step = 1.1
-sde_threshold = 9.0            # PROVISIONAL until M2 injection-recovery
-snr_threshold = 7.0            # PROVISIONAL until M2 injection-recovery
+sde_threshold = 17.0           # M2: 1% false alarms per null search (10 CVZ hosts, S14–26)
+snr_threshold = 7.0            # M2: SNR 5–7 recover the same; 7 kept for margin
 max_signals = 3
 threads = 0
 bin_minutes = 10.0

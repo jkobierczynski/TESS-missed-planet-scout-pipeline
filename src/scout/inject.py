@@ -205,7 +205,13 @@ def inject_dir(cfg: Config, tic: int) -> Path:
 
 
 def config_key(cfg: Config, upstream: str) -> str:
-    """What invalidates earlier results: detrend, search, the injection law, the data."""
+    """What invalidates earlier results: detrend, search, the injection law, the data.
+
+    The SDE/SNR thresholds are left out: they are what calibrate() chooses, so
+    adopting its answer must not throw away the runs it came from. (They only
+    decide whether the search goes on to a second signal, which barely
+    matters on hosts with no known planet.)
+    """
     from scout.pipeline import _key
 
     law = {
@@ -213,7 +219,8 @@ def config_key(cfg: Config, upstream: str) -> str:
         for k, v in asdict(cfg.inject).items()
         if k not in {"n_injections", "n_scrambles", "false_alarm_target"}
     }
-    return _key("inject", cfg.detrend, cfg.search.periodic, law, upstream)
+    search = dataclasses.replace(cfg.search.periodic, sde_threshold=0.0, snr_threshold=0.0)
+    return _key("inject", cfg.detrend, search, law, upstream)
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:

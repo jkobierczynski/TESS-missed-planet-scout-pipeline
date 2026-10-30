@@ -165,3 +165,22 @@ def test_inject_and_calibrate_cli(tmp_path, monkeypatch, capsys):
     assert "Recovery map" in report.read_text()
     res = json.loads((tmp_path / "results/cal/calibration/calibration.json").read_text())
     assert res["chosen"]["n_injections"] == 4 and res["hosts"][0]["tic"] == 77
+
+
+def test_adopting_thresholds_keeps_results():
+    import dataclasses
+
+    from scout.config import load_config
+    from scout.inject import config_key
+
+    cfg = load_config()
+    new = dataclasses.replace(
+        cfg,
+        search=dataclasses.replace(
+            cfg.search,
+            periodic=dataclasses.replace(cfg.search.periodic, sde_threshold=17.0),
+        ),
+    )
+    assert config_key(cfg, "u") == config_key(new, "u")
+    wider = dataclasses.replace(cfg, detrend=dataclasses.replace(cfg.detrend, window_factor=4.0))
+    assert config_key(cfg, "u") != config_key(wider, "u")

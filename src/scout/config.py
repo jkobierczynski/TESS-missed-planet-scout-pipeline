@@ -105,8 +105,9 @@ class PeriodicSearchConfig:
     min_transits: int = 2
     oversampling_factor: int = 3
     duration_grid_step: float = 1.1
-    # Provisional. M2 replaces these with values measured from injection-recovery
-    # and inverted-light-curve false-alarm rates (design §5).
+    # Built-in defaults only. Real thresholds come from `scout calibrate`
+    # (injection-recovery + null searches, design §5) and live in the run's
+    # config; the M2 CVZ calibration gave SDE 17, SNR 7 (config/cvz-north.toml).
     sde_threshold: float = 9.0
     snr_threshold: float = 7.0
     max_signals: int = 3
