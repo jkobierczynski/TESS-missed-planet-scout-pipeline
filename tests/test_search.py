@@ -59,3 +59,54 @@ def test_period_may_be_double_uses_epoch_parity():
     assert period_may_be_double(r([0, 2, 6]))
     assert period_may_be_double(r([3, 9]))
     assert not period_may_be_double(r([4]))  # one transit says nothing
+
+
+def _box_lc(period, depth=2e-3, dur_h=4.0, n_days=54.0, noise=3e-4, seed=0):
+    rng = np.random.default_rng(seed)
+    t = np.arange(1700.0, 1700.0 + n_days, 10 / 1440)
+    phase = (t - 1700.5 + 0.5 * period) % period - 0.5 * period
+    y = 1.0 - depth * (np.abs(phase) < dur_h / 48) + rng.normal(0, noise, len(t))
+    return t, y, np.full(len(t), noise)
+
+
+def test_resolve_submultiple_finds_true_period():
+    from scout.search.periodic import resolve_submultiple
+
+    t, y, dy = _box_lc(1.3)
+    # TLS reporting 3× or 2× the true period: the in-between epochs give it away.
+    assert resolve_submultiple(t, y, dy, 3.9, 1700.5, 4.0, 5, 0.5) == 3
+    assert resolve_submultiple(t, y, dy, 2.6, 1700.5, 4.0, 5, 0.5) == 2
+    # Right period: nothing in between, keep it.
+    assert resolve_submultiple(t, y, dy, 1.3, 1700.5, 4.0, 5, 0.5) == 1
+    # Never below the search's own minimum period.
+    assert resolve_submultiple(t, y, dy, 3.9, 1700.5, 4.0, 5, 1.5) == 1
+
+
+def test_resolve_submultiple_ignores_eclipsing_binary_secondary():
+    from scout.search.periodic import resolve_submultiple
+
+    t, y, dy = _box_lc(4.0, depth=5e-3)
+    # A shallow secondary at phase 0.5 is not "the same dip".
+    phase = (t - 1700.5 - 2.0 + 2.0) % 4.0 - 2.0
+    y = y - 5e-4 * (np.abs(phase) < 4.0 / 48)
+    assert resolve_submultiple(t, y, dy, 4.0, 1700.5, 4.0, 5, 0.5) == 1
+
+
+def test_short_period_planet_on_large_star_not_aliased(cfg):
+    from scout.synthetic import SyntheticStar, Transit, sector_window
+
+    # 1.1 d around a 2.2 R☉ star: T14 ≈ 4.7 h, 18 % of the period, beyond TLS's 12 % cap.
+    tr = Transit(
+        t0_btjd=sector_window(14)[0] + 0.7, period_days=1.1, depth=2e-3, duration_hours=4.7
+    )
+    star = SyntheticStar(
+        sectors=(14, 15), noise_ppm=600.0, radius_rsun=2.2, mass_msun=1.1, transits=(tr,)
+    )
+    flat = detrend(stitch(generate(star), cfg.stitch), cfg.detrend)
+    pcfg = dataclasses.replace(cfg.search.periodic, max_signals=1, run_inverted=False)
+    best = search_periodic(flat, pcfg).detections[0]
+    assert best.period_days == pytest.approx(1.1, rel=2e-3)
+    assert "period_divided_by_2" in best.flags
+    # Without the check TLS reports twice the period.
+    off = dataclasses.replace(pcfg, resolve_submultiples=False)
+    assert search_periodic(flat, off).detections[0].period_days == pytest.approx(2.2, rel=2e-3)

@@ -56,6 +56,8 @@ max_signals = 3
 threads = 0
 bin_minutes = 10.0
 run_inverted = true
+resolve_submultiples = true   # check P/2..P/5 (TLS caps duration at 12 % of P)
+submultiple_max = 5
 
 [search.single]                # used from M4
 duration_min_hours = 1.0
