@@ -31,9 +31,17 @@ class RunConfig:
 class TargetsConfig:
     # Northern CVZ: stars within ~12° of the north ecliptic pole.
     ecliptic_lat_min_deg: float = 78.0
+    tmag_min: float = 0.0
     tmag_max: float = 13.0
     teff_min_k: float = 2500.0
     teff_max_k: float = 7500.0
+    # TIC luminosity class to keep ("DWARF", "GIANT"); empty keeps all.
+    lumclass: str = "DWARF"
+    # Drop stars whose TIC contamination ratio exceeds this (blends dilute
+    # and fake transits); a missing ratio is kept. 0 disables the cut.
+    contamination_max: float = 0.1
+    # Brightest N after the cuts; 0 keeps all.
+    max_targets: int = 0
 
 
 @dataclass(frozen=True)
@@ -56,6 +64,10 @@ class FetchConfig:
     # thresholds are calibrated for a given sector span (M2), so keep this the
     # same between calibration and science runs.
     sectors: tuple[int, ...] = ()
+    # Delete a star's downloaded FITS once its stitched light curve is written.
+    # Batch runs over thousands of stars do not fit on disk otherwise; a later
+    # stitch rerun downloads them again.
+    prune_after_stitch: bool = False
 
 
 @dataclass(frozen=True)
@@ -161,6 +173,23 @@ class InjectConfig:
 
 
 @dataclass(frozen=True)
+class TriageConfig:
+    """Cross-match against known objects (design §4, triage stage)."""
+
+    # Downloaded catalogues are reused for this many days.
+    max_age_days: float = 7.0
+    # Fractional period tolerance for "same signal", applied to P and to
+    # 1/2, 2, 1/3, 3 × P.
+    period_tolerance: float = 0.01
+    # Known objects on other stars within this radius sharing the period mark
+    # the detection as a likely blend (21″ TESS pixels: 120″ ≈ 6 px).
+    neighbour_radius_arcsec: float = 120.0
+    # Extra local catalogues (CSV with tic, period_days, name, kind columns),
+    # e.g. the TESS EB catalogue or VSX extracts.
+    extra_catalogs: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class ReportConfig:
     dpi: int = 110
 
@@ -174,6 +203,7 @@ class Config:
     detrend: DetrendConfig = field(default_factory=DetrendConfig)
     search: SearchConfig = field(default_factory=SearchConfig)
     inject: InjectConfig = field(default_factory=InjectConfig)
+    triage: TriageConfig = field(default_factory=TriageConfig)
     report: ReportConfig = field(default_factory=ReportConfig)
     source_path: Path | None = None
 
@@ -287,6 +317,17 @@ def _validate(cfg: Config) -> None:
         errors.append("search.periodic.submultiple_max must be ≥ 1")
     if p.max_signals < 1:
         errors.append("search.periodic.max_signals must be ≥ 1")
+    t = cfg.targets
+    if not 0 <= t.tmag_min < t.tmag_max:
+        errors.append("targets: need 0 ≤ tmag_min < tmag_max")
+    if not 0 < t.ecliptic_lat_min_deg < 90:
+        errors.append("targets.ecliptic_lat_min_deg must be in (0, 90)")
+    if t.max_targets < 0:
+        errors.append("targets.max_targets must be ≥ 0")
+    if not all(isinstance(x, str) for x in cfg.triage.extra_catalogs):
+        errors.append("triage.extra_catalogs must be a list of file paths")
+    if cfg.triage.period_tolerance <= 0 or cfg.triage.neighbour_radius_arcsec < 0:
+        errors.append("triage: period_tolerance must be > 0, neighbour_radius_arcsec ≥ 0")
     i = cfg.inject
     if i.n_injections < 0 or i.n_scrambles < 0:
         errors.append("inject.n_injections and inject.n_scrambles must be ≥ 0")
