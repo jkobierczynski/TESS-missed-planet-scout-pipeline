@@ -58,6 +58,20 @@ def test_validation(tmp_path):
         load_config(write(tmp_path, "[search.periodic]\nmin_transits = 1\n"))
     with pytest.raises(ConfigError, match="flux_columns"):
         load_config(write(tmp_path, '[fetch]\nsources = ["SPOC", "TGLC"]\n'))
+    with pytest.raises(ConfigError, match=r"fetch\.sectors"):
+        load_config(write(tmp_path, '[fetch]\nsectors = [14, "x"]\n'))
+    with pytest.raises(ConfigError, match="radius"):
+        load_config(write(tmp_path, "[inject]\nradius_min_rearth = 5.0\nradius_max_rearth = 2.0\n"))
+    with pytest.raises(ConfigError, match="false_alarm_target"):
+        load_config(write(tmp_path, "[inject]\nfalse_alarm_target = 0\n"))
+
+
+def test_shipped_calibration_config_matches_science_search():
+    sci = load_config(REPO / "config" / "cvz-north.toml")
+    cal = load_config(REPO / "config" / "m2-calibration.toml")
+    # Thresholds only transfer if everything upstream of them is the same.
+    assert (cal.stitch, cal.detrend, cal.search) == (sci.stitch, sci.detrend, sci.search)
+    assert cal.fetch.sectors == tuple(range(14, 27))
 
 
 def test_bad_toml_and_missing_file(tmp_path):

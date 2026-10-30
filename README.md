@@ -4,9 +4,9 @@ Find transiting exoplanet candidates in public TESS data that the official
 pipelines (SPOC, QLP) missed, vet them, and package the survivors as ExoFOP
 community TOIs. Design and roadmap: [DESIGN.md](DESIGN.md).
 
-**Status:** M0 (skeleton) done, M1 (single star end to end) in progress.
-Detections are *not vetted*: the §6 checklist arrives in M5, and the search
-thresholds are provisional until the M2 injection-recovery maps exist.
+**Status:** M0 (skeleton) and M1 (single star end to end) done, M2
+(injection-recovery and threshold calibration) in progress. Detections are
+*not vetted*: the §6 checklist arrives in M5.
 
 ## Install
 
@@ -48,6 +48,28 @@ scout run   --run demo 999000001
 
 Presets: `quiet`, `hot-jupiter`, `sub-neptune`, `m-dwarf`.
 
+### Calibrating the search (M2)
+
+Thresholds are measured, not guessed (design §3.2, §5). On host stars with no
+known planet or TOI, `scout inject` multiplies synthetic transits into the
+stitched light curve, reruns detrend and search, and records which ones come
+back. It also runs null searches on per-sector time-scrambled and inverted
+copies of the flattened light curve. `scout calibrate` pools all hosts in a
+run and picks the SDE/SNR pair that recovers the most injections while keeping
+the false-alarm rate per null search at or below `inject.false_alarm_target`.
+
+```bash
+scout inject    -c config/m2-calibration.toml <host TICs...>   # resumable
+scout calibrate -c config/m2-calibration.toml
+```
+
+The report (`results/<run>/calibration/calibration.html`) shows the recovery
+map over period × radius, the null distribution against recovered injections,
+and per-host numbers. Thresholds only carry over to a science run with the same
+stitch, detrend and search settings and a similar sector span, so
+`config/m2-calibration.toml` mirrors `config/cvz-north.toml` apart from
+`fetch.sectors` and `[inject]`.
+
 `scout config show -c config/cvz-north.toml` prints the effective configuration;
 `scout config check` validates it.
 
@@ -67,6 +89,8 @@ results/<run>/
   stars/TIC<id>/fetch.json    chosen MAST files + TIC stellar parameters
   stars/TIC<id>/stitched.parquet, flat.parquet, search.json
   reports/TIC<id>.html
+  inject/TIC<id>/             injections.jsonl, nulls.jsonl (scout inject)
+  calibration/                calibration.html, calibration.json (scout calibrate)
 ```
 
 `results/` and `cache/` stay out of git on purpose: unsubmitted candidates are

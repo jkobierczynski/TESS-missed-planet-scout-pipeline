@@ -1,5 +1,6 @@
 import dataclasses
 
+import numpy as np
 import pytest
 
 from scout.detrend import detrend
@@ -40,3 +41,21 @@ def test_recovers_sub_neptune(cfg):
 def test_quiet_star_has_no_passing_signal(cfg):
     res, _ = run("quiet", cfg)
     assert not any(d.passes_threshold for d in res.detections)
+
+
+def test_period_may_be_double_uses_epoch_parity():
+    from types import SimpleNamespace
+
+    from scout.search.periodic import period_may_be_double
+
+    def r(epochs_with_data, n=10):
+        times = 100.0 + 2.0 * np.arange(n)
+        counts = np.zeros(n)
+        counts[list(epochs_with_data)] = 30
+        return SimpleNamespace(period=2.0, T0=100.0, transit_times=times, per_transit_count=counts)
+
+    # Most predicted transits fall in gaps, but odd and even epochs both have data.
+    assert not period_may_be_double(r([0, 1, 7]))
+    assert period_may_be_double(r([0, 2, 6]))
+    assert period_may_be_double(r([3, 9]))
+    assert not period_may_be_double(r([4]))  # one transit says nothing

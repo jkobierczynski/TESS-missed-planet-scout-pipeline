@@ -1,6 +1,7 @@
 import dataclasses
 
 import numpy as np
+import pytest
 
 from scout.detrend import detrend, window_days
 from scout.stitch import quality_mask, stitch
@@ -56,3 +57,37 @@ def test_upper_clip_removes_flare_not_dips(raw_lc, cfg):
     assert not np.any(flat.time == t_flare)
     assert np.any(flat.time == t_dip)
     assert flat.meta["detrend"]["n_clipped_upper"] >= 3
+
+
+def test_fast_rotator_prewhitened_transit_kept(cfg):
+    from scout.synthetic import SyntheticStar, Transit, generate, sector_window
+
+    tr = Transit(
+        t0_btjd=sector_window(14)[0] + 1.3, period_days=5.3, depth=1.5e-3, duration_hours=3.0
+    )
+    star = SyntheticStar(
+        sectors=(14, 15),
+        noise_ppm=500.0,
+        rotation_period_days=0.8,
+        rotation_amplitude=0.01,
+        transits=(tr,),
+        seed=2,
+    )
+    st = stitch(generate(star), cfg.stitch)
+    plain = detrend(st, dataclasses.replace(cfg.detrend, rotation_prewhiten=False))
+    flat = detrend(st, cfg.detrend)
+    info = flat.meta["detrend"]["rotation_prewhiten"]
+    assert info["applied"]
+    assert any(abs(p - 0.8) < 0.01 for p in info["periods_days"])
+    oot = transit_model(flat.time, tr) == 1.0
+    # The biweight alone leaves the 1 % modulation; prewhitening gets close to the noise.
+    assert np.std(plain.flux[oot]) > 3e-3
+    assert np.std(flat.flux[oot]) < 650e-6
+    intr = transit_model(flat.time, tr) < 1 - 0.8 * tr.depth
+    assert 1 - np.median(flat.flux[intr]) == pytest.approx(tr.depth, rel=0.25)
+
+
+def test_slow_rotator_and_transits_not_prewhitened(raw_lc, cfg):
+    # 8 d rotation is the biweight's job; a deep transit must not trigger the fit.
+    flat = detrend(stitch(raw_lc, cfg.stitch), cfg.detrend)
+    assert not flat.meta["detrend"]["rotation_prewhiten"]["applied"]

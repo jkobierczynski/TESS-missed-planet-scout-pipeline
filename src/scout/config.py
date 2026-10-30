@@ -52,6 +52,10 @@ class FetchConfig:
         }
     )
     timeout_s: float = 300.0
+    # Restrict to these sectors; empty = every sector MAST has. Search
+    # thresholds are calibrated for a given sector span (M2), so keep this the
+    # same between calibration and science runs.
+    sectors: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -77,6 +81,18 @@ class DetrendConfig:
     # Upper-only sigma clip on the flattened flux: removes flares and cosmic
     # rays, never dips. 0 disables it.
     upper_sigma_clip: float = 4.0
+    # Fast rotators: a biweight window long enough to keep a 12 h transit cannot
+    # follow spot modulation with P_rot of a few days. When Lomb-Scargle finds
+    # such a rotation signal, it is fitted (sinusoid + harmonics, per orbit,
+    # robust to dips) and divided out before the biweight.
+    rotation_prewhiten: bool = True
+    rotation_max_period_days: float = 4.0
+    rotation_min_amplitude: float = 2e-3  # fractional semi-amplitude to engage
+    # Once engaged, further frequencies (spot evolution, P_rot/2, 2·P_rot) are
+    # removed down to this semi-amplitude.
+    rotation_term_min_amplitude: float = 3e-4
+    rotation_max_terms: int = 4  # independent frequencies removed at most
+    rotation_harmonics: int = 3  # harmonics fitted per frequency
 
 
 @dataclass(frozen=True)
@@ -89,8 +105,9 @@ class PeriodicSearchConfig:
     min_transits: int = 2
     oversampling_factor: int = 3
     duration_grid_step: float = 1.1
-    # Provisional. M2 replaces these with values measured from injection-recovery
-    # and inverted-light-curve false-alarm rates (design §5).
+    # Built-in defaults only. Real thresholds come from `scout calibrate`
+    # (injection-recovery + null searches, design §5) and live in the run's
+    # config; the M2 CVZ calibration gave SDE 17, SNR 7 (config/cvz-north.toml).
     sde_threshold: float = 9.0
     snr_threshold: float = 7.0
     max_signals: int = 3
@@ -116,6 +133,29 @@ class SearchConfig:
 
 
 @dataclass(frozen=True)
+class InjectConfig:
+    """Injection-recovery and false-alarm tests (M2, design §3.2, §5, §8)."""
+
+    n_injections: int = 100  # per host star
+    period_min_days: float = 0.5
+    period_max_days: float = 0.0  # 0 = the search's own upper limit
+    radius_min_rearth: float = 0.7
+    radius_max_rearth: float = 8.0
+    impact_max: float = 0.9
+    # A detection recovers an injection when its period is within this
+    # fractional tolerance and its epoch within half a duration.
+    period_tolerance: float = 0.01
+    # Null samples per host: per-sector random time-rolls of the flattened flux
+    # (breaks any real periodicity, keeps the noise), each searched as is and
+    # inverted. The unscrambled inverted curve is always added.
+    n_scrambles: int = 10
+    # Thresholds are chosen to keep the false-alarm rate per null search at or
+    # below this, while recovering as many injections as possible.
+    false_alarm_target: float = 0.01
+    seed: int = 0
+
+
+@dataclass(frozen=True)
 class ReportConfig:
     dpi: int = 110
 
@@ -128,6 +168,7 @@ class Config:
     stitch: StitchConfig = field(default_factory=StitchConfig)
     detrend: DetrendConfig = field(default_factory=DetrendConfig)
     search: SearchConfig = field(default_factory=SearchConfig)
+    inject: InjectConfig = field(default_factory=InjectConfig)
     report: ReportConfig = field(default_factory=ReportConfig)
     source_path: Path | None = None
 
@@ -226,6 +267,10 @@ def _validate(cfg: Config) -> None:
         errors.append("detrend.window_factor must be > 1 or transits get flattened")
     if d.max_transit_duration_hours <= 0:
         errors.append("detrend.max_transit_duration_hours must be > 0")
+    if d.rotation_max_period_days <= 0 or d.rotation_harmonics < 1 or d.rotation_max_terms < 1:
+        errors.append(
+            "detrend.rotation_max_period_days must be > 0 and rotation_harmonics/max_terms ≥ 1"
+        )
     p = cfg.search.periodic
     if p.period_min_days <= 0:
         errors.append("search.periodic.period_min_days must be > 0")
@@ -235,6 +280,19 @@ def _validate(cfg: Config) -> None:
         errors.append("search.periodic.min_transits must be ≥ 2 (single events go to M4)")
     if p.max_signals < 1:
         errors.append("search.periodic.max_signals must be ≥ 1")
+    i = cfg.inject
+    if i.n_injections < 0 or i.n_scrambles < 0:
+        errors.append("inject.n_injections and inject.n_scrambles must be ≥ 0")
+    if not 0 < i.radius_min_rearth < i.radius_max_rearth:
+        errors.append("inject: need 0 < radius_min_rearth < radius_max_rearth")
+    if i.period_min_days <= 0 or (0 < i.period_max_days <= i.period_min_days):
+        errors.append("inject: need 0 < period_min_days < period_max_days (or 0)")
+    if not 0 <= i.impact_max < 1:
+        errors.append("inject.impact_max must be in [0, 1)")
+    if not 0 < i.false_alarm_target < 1:
+        errors.append("inject.false_alarm_target must be in (0, 1)")
+    if not all(isinstance(x, int) and not isinstance(x, bool) and x > 0 for x in cfg.fetch.sectors):
+        errors.append("fetch.sectors must be a list of positive sector numbers")
     if not cfg.fetch.sources:
         errors.append("fetch.sources must list at least one light-curve source")
     missing = [s for s in cfg.fetch.sources if s not in cfg.fetch.flux_columns]

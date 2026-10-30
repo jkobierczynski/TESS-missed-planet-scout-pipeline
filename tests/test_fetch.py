@@ -146,3 +146,9 @@ def test_with_retries_does_not_retry_other_errors():
     with pytest.raises(LookupError):
         _with_retries("test", bad, delays=(0.0, 0.0))
     assert len(calls) == 1
+
+
+def test_select_restricted_to_configured_sectors():
+    cfg = FetchConfig(sectors=(14, 16))
+    chosen = select_products([cand(s, "SPOC", 120) for s in (14, 15, 16, 17)], cfg)
+    assert [p.sector for p in chosen] == [14, 16]

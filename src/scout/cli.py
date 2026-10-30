@@ -19,7 +19,6 @@ _PLANNED = {
     "vet": "M5 (centroids, Gaia neighbours, TRICERATOPS)",
     "ctoi": "M6 (ExoFOP CTOI package)",
     "ephem": "M6 (transit windows from the observatory)",
-    "inject": "M2 (injection-recovery maps)",
 }
 
 log = logging.getLogger("scout")
@@ -48,8 +47,17 @@ def _parse_tic(text: str) -> int:
 
 
 def _load(args: argparse.Namespace) -> Config:
-    overrides = {"run": {"name": args.run}} if getattr(args, "run", None) else None
-    return load_config(args.config, overrides)
+    overrides: dict = {}
+    if getattr(args, "run", None):
+        overrides["run"] = {"name": args.run}
+    inject = {}
+    if getattr(args, "n", None) is not None:
+        inject["n_injections"] = args.n
+    if getattr(args, "scrambles", None) is not None:
+        inject["n_scrambles"] = args.scrambles
+    if inject:
+        overrides["inject"] = inject
+    return load_config(args.config, overrides or None)
 
 
 def _add_common(p: argparse.ArgumentParser) -> None:
@@ -99,6 +107,22 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("tic", nargs="+", type=_parse_tic, help="TIC ID(s)")
         p.add_argument("--force", action="store_true", help="rerun even if up to date")
 
+    p = sub.add_parser(
+        "inject",
+        help="injection-recovery and null searches on host stars (resumable)",
+        description="Fetch and stitch each host if needed, then inject transits and run "
+        "null searches. Hosts should have no known planet or TOI.",
+    )
+    _add_common(p)
+    p.add_argument("tic", nargs="+", type=_parse_tic, help="host TIC ID(s)")
+    p.add_argument("--n", type=int, help="override inject.n_injections")
+    p.add_argument("--scrambles", type=int, help="override inject.n_scrambles")
+
+    p = sub.add_parser(
+        "calibrate", help="pool a run's injections and nulls, choose thresholds, write report"
+    )
+    _add_common(p)
+
     for name, when in _PLANNED.items():
         p = sub.add_parser(name, help=f"not yet implemented: {when}")
         p.add_argument("rest", nargs=argparse.REMAINDER)
@@ -146,6 +170,57 @@ def _cmd_stage(cfg: Config, args: argparse.Namespace) -> int:
     return rc
 
 
+def _cmd_inject(cfg: Config, args: argparse.Namespace) -> int:
+    from scout.inject import run_star_injections
+    from scout.lightcurve import LightCurve
+    from scout.pipeline import record_invocation, stage_fetch, stage_stitch, star_dir
+
+    def progress(msg: str) -> None:
+        print(msg, file=sys.stderr, flush=True)
+
+    status: dict[int, str] = {}
+    rc = 0
+    for tic in args.tic:
+        try:
+            upstream = stage_stitch(cfg, tic, stage_fetch(cfg, tic))
+            stitched = LightCurve.read(star_dir(cfg, tic) / "stitched.parquet")
+            out = run_star_injections(cfg, tic, stitched, upstream, progress=progress)
+        except Exception as exc:
+            log.debug("TIC %s failed", tic, exc_info=True)
+            stage = getattr(exc, "stage", None) or "inject"
+            print(f"TIC {tic}: FAILED in {stage}: {exc}", file=sys.stderr)
+            status[tic] = f"failed: {exc}"
+            rc = 1
+            continue
+        status[tic] = "ok"
+        print(f"TIC {tic}: {out['injections']} injections, {out['nulls']} nulls in {out['dir']}")
+    record_invocation(cfg, "inject", list(args.tic), status)
+    return rc
+
+
+def _cmd_calibrate(cfg: Config) -> int:
+    from scout.inject import calibrate
+
+    try:
+        res = calibrate(cfg)
+    except ValueError as exc:
+        print(f"calibrate: {exc}", file=sys.stderr)
+        return 1
+    ch, cur = res["chosen"], res["current"]
+    print(
+        f"chosen:     SDE ≥ {ch['sde']:g}, SNR ≥ {ch['snr']:g}  recovers {ch['recovery']:.1%}, "
+        f"false alarms {ch['false_alarm']:.1%} of {ch['n_nulls']} null searches"
+    )
+    print(
+        f"config now: SDE ≥ {cur['sde']:g}, SNR ≥ {cur['snr']:g}  recovers {cur['recovery']:.1%}, "
+        f"false alarms {cur['false_alarm']:.1%}"
+    )
+    if ch.get("warning"):
+        print(f"warning: {ch['warning']}")
+    print(f"report: {res['report']}")
+    return 0
+
+
 def _print_summary(s: dict) -> None:
     line = f"TIC {s['tic']}: {s['until']} done"
     print(line)
@@ -183,6 +258,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _cmd_config(cfg, args.action)
     if args.command == "synth":
         return _cmd_synth(cfg, args)
+    if args.command == "inject":
+        return _cmd_inject(cfg, args)
+    if args.command == "calibrate":
+        return _cmd_calibrate(cfg)
     return _cmd_stage(cfg, args)
 
 
