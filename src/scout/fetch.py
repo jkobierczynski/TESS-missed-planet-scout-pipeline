@@ -12,7 +12,10 @@ scout[mast]``). Everything else in this module works offline.
 from __future__ import annotations
 
 import json
+import logging
 import re
+import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -21,6 +24,8 @@ import numpy as np
 
 from scout.config import FetchConfig
 from scout.lightcurve import LightCurve
+
+log = logging.getLogger(__name__)
 
 # QLP quality flags are not bit-compatible with SPOC's. Any non-zero QLP flag
 # is mapped onto SPOC's "manual exclude" bit, which the default bitmask rejects.
@@ -70,18 +75,60 @@ def select_products(cands: list[Candidate], cfg: FetchConfig) -> list[Product]:
 # --- MAST ----------------------------------------------------------------------
 
 
-def _require_astroquery() -> Any:
+def _require_astroquery(timeout_s: float | None = None) -> Any:
     try:
         from astroquery.mast import Catalogs, Observations
     except ImportError as exc:  # pragma: no cover - depends on environment
         raise RuntimeError("MAST access needs astroquery: pip install 'scout[mast]'") from exc
+    if timeout_s:
+        # astroquery copies its timeout into each connection object at import,
+        # so changing astroquery.mast.conf afterwards has no effect.
+        for obj in (Catalogs, Observations):
+            for target in (
+                obj,
+                getattr(obj, "_portal_api_connection", None),
+                getattr(obj, "_service_api_connection", None),
+            ):
+                if target is not None and hasattr(target, "TIMEOUT"):
+                    target.TIMEOUT = timeout_s
     return Catalogs, Observations
 
 
-def query_tic(tic: int) -> dict[str, Any]:
+# Delays before the 2nd, 3rd, ... attempt of a MAST call. Connections through
+# an HTTPS proxy are occasionally dropped mid-request; a retry usually works.
+_RETRY_DELAYS_S = (2.0, 8.0, 30.0)
+
+
+def _network_errors() -> tuple[type[BaseException], ...]:
+    errors: tuple[type[BaseException], ...] = (ConnectionError, TimeoutError)
+    try:
+        import requests
+    except ImportError:  # pragma: no cover - requests comes with astroquery
+        return errors
+    return (*errors, requests.exceptions.RequestException)
+
+
+def _with_retries(
+    what: str, call: Callable[[], Any], delays: tuple[float, ...] = _RETRY_DELAYS_S
+) -> Any:
+    """Run ``call``, retrying on network errors with the given backoff."""
+    for attempt, delay in enumerate((*delays, None), start=1):
+        try:
+            return call()
+        except _network_errors() as exc:
+            if delay is None:
+                raise
+            log.warning("%s failed (attempt %d): %s; retrying in %.0f s", what, attempt, exc, delay)
+            time.sleep(delay)
+    raise AssertionError("unreachable")
+
+
+def query_tic(tic: int, timeout_s: float | None = None) -> dict[str, Any]:
     """Stellar parameters from the TIC (v8.2 via MAST)."""
-    catalogs, _ = _require_astroquery()
-    rows = catalogs.query_criteria(catalog="Tic", ID=int(tic))
+    catalogs, _ = _require_astroquery(timeout_s)
+    rows = _with_retries(
+        f"TIC query for {tic}", lambda: catalogs.query_criteria(catalog="Tic", ID=int(tic))
+    )
     if len(rows) == 0:
         raise LookupError(f"TIC {tic} not found")
     r = rows[0]
@@ -118,15 +165,20 @@ def _sector_from_filename(name: str) -> int | None:
 
 def list_products(tic: int, cfg: FetchConfig) -> list[Candidate]:
     """All SPOC/TESS-SPOC/QLP light-curve files MAST has for a TIC ID."""
-    _, observations = _require_astroquery()
-    obs = observations.query_criteria(
-        target_name=str(int(tic)),
-        dataproduct_type="timeseries",
-        provenance_name=list(cfg.sources),
+    _, observations = _require_astroquery(cfg.timeout_s)
+    obs = _with_retries(
+        f"MAST observation query for TIC {tic}",
+        lambda: observations.query_criteria(
+            target_name=str(int(tic)),
+            dataproduct_type="timeseries",
+            provenance_name=list(cfg.sources),
+        ),
     )
     if len(obs) == 0:
         return []
-    prods = observations.get_product_list(obs)
+    prods = _with_retries(
+        f"MAST product list for TIC {tic}", lambda: observations.get_product_list(obs)
+    )
     by_obsid = {str(o["obsid"]): o for o in obs}
     cands: list[Candidate] = []
     for p in prods:
@@ -178,14 +230,19 @@ def _cadence_from_obs(o: Any, filename: str) -> int:
 
 def fetch(tic: int, cache_dir: Path, cfg: FetchConfig) -> dict[str, Any]:
     """Download the selected products for ``tic`` and return a manifest."""
-    _, observations = _require_astroquery()
-    star = query_tic(tic)
+    _, observations = _require_astroquery(cfg.timeout_s)
+    star = query_tic(tic, cfg.timeout_s)
     products = select_products(list_products(tic, cfg), cfg)
     dest = Path(cache_dir) / "mast"
     dest.mkdir(parents=True, exist_ok=True)
     out: list[Product] = []
     for p in products:
-        res = observations.download_file(p.url, local_path=str(dest / p.filename), cache=True)
+        res = _with_retries(
+            f"download of {p.filename}",
+            lambda p=p: observations.download_file(
+                p.url, local_path=str(dest / p.filename), cache=True
+            ),
+        )
         if res[0] != "COMPLETE":
             raise RuntimeError(f"download of {p.filename} failed: {res}")
         out.append(Product(**{**asdict(p), "local_path": str(dest / p.filename)}))
