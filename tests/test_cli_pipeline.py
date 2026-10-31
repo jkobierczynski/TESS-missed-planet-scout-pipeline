@@ -21,8 +21,14 @@ def test_bad_config_exit_code(tmp_path, capsys):
 
 
 def test_planned_commands_exit_2(capsys):
-    assert main(["vet", "123"]) == 2
-    assert "M5" in capsys.readouterr().err
+    assert main(["ctoi", "123"]) == 2
+    assert "M6" in capsys.readouterr().err
+
+
+def test_vet_needs_triage(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    assert main(["vet"]) == 2
+    assert "scout triage" in capsys.readouterr().err
 
 
 def test_bad_tic():

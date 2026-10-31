@@ -14,7 +14,6 @@ from scout.config import Config, ConfigError, load_config
 
 # Stages from the design that later milestones fill in.
 _PLANNED = {
-    "vet": "M5 (centroids, Gaia neighbours, TRICERATOPS)",
     "ctoi": "M6 (ExoFOP CTOI package)",
     "ephem": "M6 (transit windows from the observatory)",
 }
@@ -129,6 +128,25 @@ def build_parser() -> argparse.ArgumentParser:
         "triage", help="cross-match detections with known objects; write candidates + summary"
     )
     _add_common(p)
+
+    p = sub.add_parser(
+        "vet",
+        help="run the vetting checklist on triaged signals; write reports + vet_summary.html",
+        description="Vets every signal whose triage class is in vet.triage_classes. "
+        "Needs `scout triage` first. Downloads pruned light-curve FITS again for centroids "
+        "and queries Gaia DR3 at MAST.",
+    )
+    _add_common(p)
+    p.add_argument("tic", nargs="*", type=_parse_tic, help="only these stars")
+    p.add_argument("--workers", type=int, default=1, help="stars vetted at once")
+
+    p = sub.add_parser(
+        "fpp",
+        help="TRICERATOPS false-positive probabilities for signals that survived `scout vet`",
+        description="Needs the [fpp] extra (TRICERATOPS), which installs on Python ≤ 3.12 only.",
+    )
+    _add_common(p)
+    p.add_argument("tic", nargs="*", type=_parse_tic, help="only these stars (any verdict)")
 
     p = sub.add_parser(
         "inject",
@@ -281,6 +299,49 @@ def _cmd_triage(cfg: Config) -> int:
     return 0
 
 
+def _cmd_vet(cfg: Config, args: argparse.Namespace) -> int:
+    from scout.vet.run import vet_run
+
+    def progress(tic: int, res: object, done: int, total: int) -> None:
+        if isinstance(res, dict):
+            what = f"ERROR {res.get('error')}"
+        else:
+            what = ", ".join(f"{r['index']}: {r['verdict']}" for r in res)  # type: ignore[attr-defined]
+        print(f"[{done}/{total}] TIC {tic}: {what}", file=sys.stderr, flush=True)
+
+    try:
+        res = vet_run(cfg, workers=args.workers, tics=args.tic or None, progress=progress)
+    except FileNotFoundError as exc:
+        print(f"vet: {exc}", file=sys.stderr)
+        return 2
+    counts = ", ".join(f"{k} {v}" for k, v in sorted(res["counts"].items()))
+    print(f"{counts or 'nothing vetted'}; {len(res['errors'])} errors")
+    print(f"summary: {res['summary']}")
+    return 1 if res["errors"] else 0
+
+
+def _cmd_fpp(cfg: Config, args: argparse.Namespace) -> int:
+    try:
+        import triceratops  # noqa: F401
+
+        from scout.vet.fpp import fpp_run
+    except ImportError:
+        print(
+            "fpp: TRICERATOPS is not installed. It needs Python ≤ 3.12: "
+            'pip install -e ".[mast,models,fpp]" in such an environment.',
+            file=sys.stderr,
+        )
+        return 2
+
+    def progress(res: dict, check: object, done: int, total: int) -> None:
+        what = getattr(check, "detail", "ERROR")
+        print(f"[{done}/{total}] TIC {res['tic']}.{res['index']}: {what}", file=sys.stderr)
+
+    res = fpp_run(cfg, tics=args.tic or None, progress=progress)
+    print(f"{len(res['done'])} done, {len(res['errors'])} errors; summary: {res['summary']}")
+    return 1 if res["errors"] else 0
+
+
 def _cmd_calibrate(cfg: Config) -> int:
     from scout.inject import calibrate
 
@@ -351,6 +412,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _cmd_batch(cfg, args)
     if args.command == "triage":
         return _cmd_triage(cfg)
+    if args.command == "vet":
+        return _cmd_vet(cfg, args)
+    if args.command == "fpp":
+        return _cmd_fpp(cfg, args)
     return _cmd_stage(cfg, args)
 
 

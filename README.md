@@ -4,9 +4,10 @@ Find transiting exoplanet candidates in public TESS data that the official
 pipelines (SPOC, QLP) missed, vet them, and package the survivors as ExoFOP
 community TOIs. Design and roadmap: [DESIGN.md](DESIGN.md).
 
-**Status:** M0–M2 done (skeleton, single star end to end, injection-recovery
-calibration: SDE 17 / SNR 7). M3 (batch CVZ run and triage) in progress. Detections are
-*not vetted*: the §6 checklist arrives in M5.
+**Status:** M0–M3 done (skeleton, single star end to end, injection-recovery
+calibration: SDE 17 / SNR 7, batch CVZ run and triage). M5 vetting in progress:
+`scout vet` runs the §6 checklist automatically and `scout fpp` adds TRICERATOPS;
+TPF difference images are still to come.
 
 ## Install
 
@@ -65,6 +66,37 @@ Exoplanet Archive, by TIC and period (including ½, 2, ⅓, 3 × aliases) and by
 position for blends from neighbours within 120″. Local catalogues such as the
 TESS EB catalogue can be added through `triage.extra_catalogs`.
 
+### Vetting (M5)
+
+```bash
+scout vet -c config/cvz-north.toml --workers 4   # §6 checklist -> vet/, vetting.parquet, vet_summary.html
+scout fpp -c config/cvz-north.toml               # TRICERATOPS on the survivors (Python ≤ 3.12, see below)
+```
+
+`vet` takes every signal triage left as `new` or `new_on_known_host` and runs
+the design §6 checklist on it: a limb-darkened transit fit (shape, radius,
+stellar density), brightenings and sinusoids at the same period (variability),
+odd/even depths, a secondary eclipse at phase 0.5 and elsewhere, depth per
+sector and per transit, SPOC centroid shifts in transit, Gaia DR3 neighbours
+that could make the dip plus the host's RUWE, and spacecraft systematics
+(transits on dates where other stars in the run dip too, next to data gaps,
+or only half covered). Depth errors include red noise, measured as the scatter
+of transit-length averages out of transit. Each signal gets a page in
+`vet/` and a verdict: `fail` (any check failed), `review` (warnings) or
+`candidate`. None of it replaces reading the page.
+
+TRICERATOPS needs lightkurve, which does not build on Python 3.13, so `fpp`
+runs from its own environment:
+
+```bash
+uv venv -p 3.12 .venv-fpp && . .venv-fpp/bin/activate
+pip install -e ".[mast,models,fpp]"
+scout fpp -c config/cvz-north.toml
+```
+
+It fills in checklist item 10 (FPP and NFPP) for signals whose verdict is in
+`vet.fpp_verdicts`, using the SPOC apertures and Gaia DR3 from MAST.
+
 ### Calibrating the search (M2)
 
 Thresholds are measured, not guessed (design §3.2, §5). On host stars with no
@@ -109,6 +141,9 @@ results/<run>/
   targets.csv, batch.jsonl     target list and per-star batch log
   candidates.parquet           every detection with its triage verdict
   summary.html                 sortable overview, links to the star reports
+  vet/TIC<id>-<n>.html, .json  vetting page and numbers per signal (scout vet, scout fpp)
+  vetting.parquet              one row per vetted signal with every check's status
+  vet_summary.html             vetting overview, survivors first
   inject/TIC<id>/             injections.jsonl, nulls.jsonl (scout inject)
   calibration/                calibration.html, calibration.json (scout calibrate)
 ```
