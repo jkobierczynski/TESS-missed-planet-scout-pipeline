@@ -24,21 +24,34 @@ pip install -e ".[mast,models,dev]"
 
 One command does the whole search: it selects the targets, downloads and
 searches every star, cross-matches the detections with known planets and TOIs,
-and vets what is new. It needs Python 3.12 (3.11 works too) and an internet
+and vets what is new. It needs Python 3.12 (3.11 works too; 3.13 runs
+everything except `scout fpp`, and 3.14 is not supported yet) and an internet
 connection to MAST.
 
+The simplest way to get Python 3.12, whatever your system Python is, is
+[uv](https://docs.astral.sh/uv/). On Linux, macOS or WSL (Ubuntu):
+
 ```bash
+sudo apt install build-essential     # WSL/Ubuntu: a C compiler for batman
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source ~/.local/bin/env              # or open a new terminal
+
 git clone https://github.com/jkobierczynski/TESS-missed-planet-scout-pipeline.git
 cd TESS-missed-planet-scout-pipeline
-python3.12 -m venv .venv
-source .venv/bin/activate          # Windows: py -3.12 -m venv .venv  then  .venv\Scripts\activate
-pip install -e ".[mast,models,fpp]"
+uv venv -p 3.12 .venv                # downloads Python 3.12 if needed
+source .venv/bin/activate
+uv pip install -e ".[mast,models,fpp]"
 
 scout survey -c config/cvz-north-t10.toml
 ```
 
-On Windows, batman (in `models`) compiles from source and needs the Microsoft
-C++ Build Tools; running the same commands in WSL (Ubuntu) avoids that.
+uv's Python includes the C headers, so batman (in `models`) builds without a
+`python3-dev` package. With a system Python 3.12 instead, use
+`python3.12 -m venv .venv` and `pip install -e ".[mast,models,fpp]"`, and
+install `python3.12-dev` and `build-essential` first (on Ubuntu 24.04 these
+come from the standard repositories). An error like `Python.h: No such file or
+directory` means those headers are missing. On native Windows, batman needs the
+Microsoft C++ Build Tools; WSL avoids that.
 
 `config/cvz-north-t10.toml` covers the 1,726 northern-CVZ dwarfs with Tmag
 8.8–10 (the 500 brighter ones were run as `cvz-north`). Stop it any time with
