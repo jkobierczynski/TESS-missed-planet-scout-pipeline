@@ -20,6 +20,56 @@ pip install -e ".[mast,models,dev]"
 - `mast` adds astroquery, needed only for `scout fetch`.
 - `models` adds batman for limb-darkened synthetic transits (a trapezoid is used without it).
 
+## Run a survey on your own computer
+
+One command does the whole search: it selects the targets, downloads and
+searches every star, cross-matches the detections with known planets and TOIs,
+and vets what is new. It needs Python 3.12 (3.11 works too; 3.13 runs
+everything except `scout fpp`, and 3.14 is not supported yet) and an internet
+connection to MAST.
+
+The simplest way to get Python 3.12, whatever your system Python is, is
+[uv](https://docs.astral.sh/uv/). On Linux, macOS or WSL (Ubuntu):
+
+```bash
+sudo apt install build-essential     # WSL/Ubuntu: a C compiler for batman
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source ~/.local/bin/env              # or open a new terminal
+
+git clone https://github.com/jkobierczynski/TESS-missed-planet-scout-pipeline.git
+cd TESS-missed-planet-scout-pipeline
+uv venv -p 3.12 .venv                # downloads Python 3.12 if needed
+source .venv/bin/activate
+uv pip install -e ".[mast,models,fpp]"
+
+scout survey -c config/cvz-north-t10.toml
+```
+
+uv's Python includes the C headers, so batman (in `models`) builds without a
+`python3-dev` package. With a system Python 3.12 instead, use
+`python3.12 -m venv .venv` and `pip install -e ".[mast,models,fpp]"`, and
+install `python3.12-dev` and `build-essential` first (on Ubuntu 24.04 these
+come from the standard repositories). An error like `Python.h: No such file or
+directory` means those headers are missing. On native Windows, batman needs the
+Microsoft C++ Build Tools; WSL avoids that.
+
+`config/cvz-north-t10.toml` covers the 1,726 northern-CVZ dwarfs with Tmag
+8.8–10 (the 500 brighter ones were run as `cvz-north`). Stop it any time with
+Ctrl-C, or let the machine sleep: the same command continues where it stopped,
+and failed downloads are retried. By default it uses half your CPU cores
+(`--workers N` to change). A 4-core machine did about 100 stars an hour, and
+each star keeps about 11 MB in `results/`, so this run needs about 20 GB of
+disk. `--limit 50` makes a quick trial run on the 50 brightest stars.
+
+When it finishes, open `results/cvz-north-t10/vet_summary.html`. Signals with
+the verdict `candidate` or `review` then get their false-positive probability:
+
+```bash
+scout fpp -c config/cvz-north-t10.toml
+```
+
+Results stay on your machine: `results/` and `cache/` are never committed.
+
 ## Use
 
 Every stage is a subcommand. Stages are checkpointed: rerunning skips anything
@@ -86,13 +136,8 @@ of transit-length averages out of transit. Each signal gets a page in
 `candidate`. None of it replaces reading the page.
 
 TRICERATOPS needs lightkurve, which does not build on Python 3.13, so `fpp`
-runs from its own environment:
-
-```bash
-uv venv -p 3.12 .venv-fpp && . .venv-fpp/bin/activate
-pip install -e ".[mast,models,fpp]"
-scout fpp -c config/cvz-north.toml
-```
+needs a Python 3.11 or 3.12 environment with the `fpp` extra (the survey
+setup above). Everything else in scout works there too.
 
 It fills in checklist item 10 (FPP and NFPP) for signals whose verdict is in
 `vet.fpp_verdicts`, using the SPOC apertures and Gaia DR3 from MAST.

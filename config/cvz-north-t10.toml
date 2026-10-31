@@ -1,0 +1,84 @@
+# Northern TESS continuous viewing zone, second run: Tmag 8.8–10 dwarfs
+# (the 500 brighter ones are run "cvz-north").
+# Every threshold and grid the pipeline uses is set here (DESIGN.md §3.8).
+# Results go to results/<run.name>/ and are never committed.
+
+[run]
+name = "cvz-north-t10"
+results_dir = "results"
+cache_dir = "cache"
+
+[targets]
+ecliptic_lat_min_deg = 78.0
+tmag_min = 8.78
+tmag_max = 10.0
+teff_min_k = 2500.0
+teff_max_k = 7500.0
+lumclass = "DWARF"
+contamination_max = 0.1        # TIC flux contamination ratio
+max_targets = 0                # 0 = all; brightest first
+
+[fetch]
+sources = ["SPOC", "TESS-SPOC", "QLP"]   # preference order per sector
+cadences_s = [120, 200, 600, 1800]
+timeout_s = 300.0
+# Same span as the M2 calibration (TESS year 2), so the thresholds apply.
+sectors = [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26]
+prune_after_stitch = true      # ~20 MB of FITS per star otherwise
+
+[fetch.flux_columns]
+SPOC = "PDCSAP_FLUX"
+TESS-SPOC = "PDCSAP_FLUX"
+QLP = "SAP_FLUX"               # KSPSAP is already detrended; we detrend ourselves
+
+[stitch]
+quality_bitmask = 175          # SPOC "default" mask
+mask_momentum_dumps = true
+momentum_dump_bit = 32
+momentum_dump_pad_hours = 0.5
+
+[detrend]
+method = "biweight"
+window_factor = 3.0            # window = 3 × max transit duration
+max_transit_duration_hours = 12.0
+edge_cutoff_days = 0.0
+break_tolerance_days = 0.5
+upper_sigma_clip = 4.0
+rotation_prewhiten = true      # fit out spot modulation with P_rot < 4 d first
+rotation_max_period_days = 4.0
+rotation_min_amplitude = 0.002
+rotation_term_min_amplitude = 0.0003
+rotation_max_terms = 4
+rotation_harmonics = 3
+
+[search.periodic]
+period_min_days = 0.5
+period_max_baseline_fraction = 0.5
+period_max_days = 0.0          # 0 = no absolute cap
+min_transits = 2
+oversampling_factor = 3
+duration_grid_step = 1.1
+sde_threshold = 17.0           # M2: 1% false alarms per null search (10 CVZ hosts, S14–26)
+snr_threshold = 7.0            # M2: SNR 5–7 recover the same; 7 kept for margin
+max_signals = 3
+threads = 0
+bin_minutes = 10.0
+run_inverted = true
+resolve_submultiples = true   # check P/2..P/5 (TLS caps duration at 12 % of P)
+submultiple_max = 5
+
+[search.single]                # used from M4
+duration_min_hours = 1.0
+duration_max_hours = 15.0
+snr_threshold = 7.0
+
+[triage]
+max_age_days = 7.0
+period_tolerance = 0.01
+neighbour_radius_arcsec = 120.0
+max_radius_rearth = 22.4       # ≈ 2 R_Jup: bigger is an EB
+max_duration_factor = 1.5      # × longest transit the star allows at that period
+extra_catalogs = []            # local CSVs: tic, period_days, name, kind
+
+[report]
+dpi = 110

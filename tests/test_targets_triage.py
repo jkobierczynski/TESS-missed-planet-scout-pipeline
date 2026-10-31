@@ -190,3 +190,32 @@ def test_cheap_kills():
         "below_threshold",
         "too_long",
     ]
+
+
+@pytest.mark.slow
+def test_survey_runs_everything_and_resumes(tmp_path, monkeypatch, capsys):
+    pytest.importorskip("batman")
+    from scout import triage
+    from scout.cli import main
+
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "c.toml"
+    cfg.write_text(
+        '[run]\nname = "s"\n[search.periodic]\nmax_signals = 1\nrun_inverted = false\n'
+        "[vet]\ngaia = false\n"
+    )
+    for tic, preset in ((21, "hot-jupiter"), (22, "quiet")):
+        args = ["synth", "-c", str(cfg), "--preset", preset, "--tic", str(tic)]
+        assert main([*args, "--sectors", "14-15"]) == 0
+    (tmp_path / "results/s/targets.csv").write_text("tic\n21\n22\n")
+    monkeypatch.setattr(triage, "load_known", lambda c: ([], {}))
+    assert main(["survey", "-c", str(cfg), "--workers", "1"]) == 0
+    out = capsys.readouterr().out
+    assert "vet_summary.html" in out
+
+    import pyarrow.parquet as pq
+
+    vetted = pq.read_table(tmp_path / "results/s/vetting.parquet").to_pylist()
+    assert [r["tic"] for r in vetted] == [21]
+    # A second call finds everything done and finishes quickly.
+    assert main(["survey", "-c", str(cfg), "--workers", "1"]) == 0

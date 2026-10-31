@@ -3,18 +3,17 @@
 Runs after ``scout vet`` on the signals that survived it (``vet.fpp_verdicts``)
 and fills in checklist item 10 of their vetting results. TRICERATOPS
 (Giacalone & Dressing 2020) needs lightkurve, which does not install on
-Python 3.13, so this step runs in its own environment, e.g.::
-
-    uv venv -p 3.12 .venv-fpp && . .venv-fpp/bin/activate
-    pip install -e ".[mast,models,fpp]"
-    scout fpp -c config/cvz-north.toml
+Python 3.13, so this step needs a Python 3.11/3.12 environment with the
+``fpp`` extra (see the README).
 
 TRICERATOPS draws the field-star population from Gaia DR3 at ESA. Where that
 archive is unreachable, its query is sent to the Gaia DR3 copy at MAST
 instead (:func:`_patch_gaia`), with the same columns.
 
 Apertures are the SPOC optimal apertures from the light-curve files we
-already use; sectors without one (QLP) are left out of the depth model.
+already use; sectors without one (QLP) are left out of the depth model. The
+same files replace the TESScut cutouts TRICERATOPS would download
+(:class:`_Cutout`).
 """
 
 from __future__ import annotations
@@ -106,6 +105,48 @@ def check_fpp(fpp: float, nfpp: float, cfg_vet) -> ck.Check:
     return ck.Check(10, "TRICERATOPS FPP", "warn", text, v)
 
 
+class _Cutout:
+    """Stands in for a TESScut download inside TRICERATOPS.
+
+    TRICERATOPS reads the corner pixel of a TESScut cutout (1CRV4P/2CRV4P) to
+    place the stars on the detector, and today's TESScut files no longer carry
+    those keywords. The SPOC light-curve file of the same sector has what it
+    needs: the aperture image, its WCS, and its corner pixel (CRVAL1P/CRVAL2P).
+    """
+
+    def __init__(self, lc_path: str) -> None:
+        from astropy.io import fits
+
+        with fits.open(lc_path, memmap=False) as hdul:
+            ap = hdul["APERTURE"]
+            image = ap.data.astype(float)
+            wcs_header = ap.header.copy()
+        col = fits.Column(
+            name="FLUX", format=f"{image.size}D", dim=f"({image.shape[1]},{image.shape[0]})"
+        )
+        table = fits.BinTableHDU.from_columns([col], nrows=1)
+        table.data["FLUX"][0] = image
+        table.header["1CRV4P"] = wcs_header["CRVAL1P"]
+        table.header["2CRV4P"] = wcs_header["CRVAL2P"]
+        self.hdu = fits.HDUList([fits.PrimaryHDU(), table, fits.ImageHDU(header=wcs_header)])
+
+
+def _patch_tesscut(lc_files: dict[int, str]) -> None:
+    import triceratops.triceratops as tr
+
+    class _Search:
+        def __init__(self, sector: int) -> None:
+            self.sector = sector
+
+        def download_all(self, **_: Any) -> list[_Cutout]:
+            return [_Cutout(lc_files[int(self.sector)])]
+
+    def search_tesscut(target: Any = None, sector: int | None = None, **_: Any) -> _Search:
+        return _Search(int(sector))
+
+    tr.lightkurve.search_tesscut = search_tesscut
+
+
 def run_fpp_signal(cfg: Config, res: dict[str, Any]) -> ck.Check:
     import pyarrow.parquet as pq
     import triceratops.triceratops as tr
@@ -125,17 +166,19 @@ def run_fpp_signal(cfg: Config, res: dict[str, Any]) -> ck.Check:
     files, _sources, _ = _fits_files(cfg, tic)
     # Sectors with a SPOC aperture, those with the most in-transit data first.
     n_in = {int(s): int((f.in_transit & (f.sector == s)).sum()) for s in np.unique(f.sector)}
-    aps = []
+    aps, lc_files = [], {}
     for path, _src in files:
         sector = int(fits.getheader(path, 0).get("SECTOR", -1))
         ap = spoc_aperture(path)
         if ap is not None and n_in.get(sector, 0) > 0:
             aps.append((n_in[sector], sector, ap))
+            lc_files[sector] = path
     if not aps:
         return ck.Check(10, "TRICERATOPS FPP", "n/a", "no SPOC aperture in a sector with a transit")
     aps.sort(key=lambda a: -a[0])
     aps = aps[: cfg.vet.fpp_max_sectors]
     sectors = np.array([a[1] for a in aps])
+    _patch_tesscut(lc_files)
     target = tr.target(ID=tic, sectors=sectors)
     target.calc_depths(tdepth=eph.depth_ppm * 1e-6, all_ap_pixels=[a[2] for a in aps])
     x, y, err = folded_for_fpp(f, cfg.vet.fpp_bin_minutes)
