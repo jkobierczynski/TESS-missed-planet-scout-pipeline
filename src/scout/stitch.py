@@ -33,17 +33,29 @@ def quality_mask(lc: LightCurve, cfg: StitchConfig) -> np.ndarray:
     return keep
 
 
-def normalise(lc: LightCurve) -> LightCurve:
-    """Divide each sector by its median flux."""
+def normalise(lc: LightCurve) -> tuple[LightCurve, dict[int, float]]:
+    """Divide each sector by its median flux.
+
+    A sector whose median is not positive (it happens: background
+    over-subtraction in PDCSAP for faint or blended stars) cannot be
+    normalised and is dropped; the dropped sectors and their medians are
+    returned so the stitch metadata records them.
+    """
     out = lc.select(np.ones(len(lc), dtype=bool))
+    dropped: dict[int, float] = {}
     for s in out.sectors:
         m = out.sector == s
         med = np.nanmedian(out.flux[m])
         if not np.isfinite(med) or med <= 0:
-            raise ValueError(f"sector {s}: median flux {med} cannot be normalised")
+            dropped[int(s)] = float(med)
+            continue
         out.flux[m] = out.flux[m] / med
         out.flux_err[m] = out.flux_err[m] / med
-    return out
+    if dropped:
+        out = out.select(~np.isin(out.sector, list(dropped)))
+    if len(out) == 0:
+        raise ValueError(f"no sector could be normalised (medians {dropped})")
+    return out, dropped
 
 
 def stitch(parts: list[LightCurve] | LightCurve, cfg: StitchConfig) -> LightCurve:
@@ -54,8 +66,9 @@ def stitch(parts: list[LightCurve] | LightCurve, cfg: StitchConfig) -> LightCurv
     lc = lc.select(keep)
     if len(lc) == 0:
         raise ValueError("no cadences left after quality masking")
-    lc = normalise(lc)
+    lc, dropped = normalise(lc)
     lc.meta["stitch"] = {
+        "sectors_dropped_bad_median": dropped,
         "n_in": n_in,
         "n_kept": len(lc),
         "sectors": lc.sectors,

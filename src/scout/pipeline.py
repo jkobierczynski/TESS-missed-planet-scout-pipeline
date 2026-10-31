@@ -21,6 +21,7 @@ fetch or stitch (design §3.6).
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import logging
@@ -130,7 +131,8 @@ def stage_fetch(cfg: Config, tic: int, force: bool = False) -> str:
             )
             _write_stamp(out, key)
         return key
-    key = _key("fetch", cfg.fetch, tic)
+    # Pruning is housekeeping, not an input: toggling it must not refetch.
+    key = _key("fetch", dataclasses.replace(cfg.fetch, prune_after_stitch=False), tic)
 
     def produce() -> None:
         manifest = fetch_mod.fetch(tic, cfg.run.cache_dir, cfg.fetch)
@@ -145,7 +147,22 @@ def _load_raw(cfg: Config, tic: int) -> tuple[list[LightCurve] | LightCurve, dic
     manifest = fetch_mod.read_manifest(star_dir(cfg, tic) / "fetch.json")
     if "raw" in manifest:
         return LightCurve.read(manifest["raw"]), manifest
+    if any(not Path(p["local_path"]).exists() for p in manifest["products"]):
+        # Pruned after an earlier stitch (fetch.prune_after_stitch): download again.
+        log.info("TIC %s: cached FITS missing, fetching again", tic)
+        stage_fetch(cfg, tic, force=True)
+        manifest = fetch_mod.read_manifest(star_dir(cfg, tic) / "fetch.json")
     return fetch_mod.load_from_manifest(manifest, cfg.fetch), manifest
+
+
+def _prune_raw(manifest: dict[str, Any]) -> int:
+    n = 0
+    for p in manifest.get("products", []):
+        path = Path(p["local_path"])
+        if path.exists():
+            n += path.stat().st_size
+            path.unlink()
+    return n
 
 
 def stage_stitch(cfg: Config, tic: int, upstream: str, force: bool = False) -> str:
@@ -162,6 +179,8 @@ def stage_stitch(cfg: Config, tic: int, upstream: str, force: bool = False) -> s
         lc.meta["source"] = "+".join(sources)
         lc.meta["inputs"] = per_sector
         lc.write(out)
+        if cfg.fetch.prune_after_stitch and "raw" not in manifest:
+            log.info("TIC %s: pruned %.1f MB of FITS", tic, _prune_raw(manifest) / 1e6)
 
     return _run_stage("stitch", out, key, force, produce)[0]
 
@@ -180,7 +199,8 @@ def stage_detrend(cfg: Config, tic: int, upstream: str, force: bool = False) -> 
 def stage_search(cfg: Config, tic: int, upstream: str, force: bool = False) -> str:
     sd = star_dir(cfg, tic)
     out = sd / "search.json"
-    key = _key("search", cfg.search.periodic, upstream)
+    # Thread count changes speed, not results; batch runs split threads between workers.
+    key = _key("search", dataclasses.replace(cfg.search.periodic, threads=0), upstream)
 
     def produce() -> None:
         res = search_periodic(LightCurve.read(sd / "flat.parquet"), cfg.search.periodic)
@@ -288,3 +308,88 @@ def record_invocation(cfg: Config, command: str, tics: list[int], status: dict[i
     )
     _write_json(path, data)
     return path
+
+
+# --- batch ----------------------------------------------------------------------
+
+
+def _batch_worker(cfg: Config, tic: int, until: str) -> dict[str, Any]:
+    import time
+
+    t0 = time.monotonic()
+    try:
+        summary = run_star(cfg, tic, until=until)
+    except Exception as exc:
+        return {
+            "tic": tic,
+            "status": "failed",
+            "stage": getattr(exc, "stage", None),
+            "error": str(exc),
+            "seconds": round(time.monotonic() - t0, 1),
+        }
+    n_pass = sum(d["passes_threshold"] for d in summary.get("detections", []))
+    return {
+        "tic": tic,
+        "status": "ok",
+        "n_passing": n_pass,
+        "seconds": round(time.monotonic() - t0, 1),
+    }
+
+
+def batch_log_path(cfg: Config) -> Path:
+    return cfg.run_dir / "batch.jsonl"
+
+
+def run_batch(
+    cfg: Config,
+    tics: list[int],
+    until: str = "report",
+    workers: int = 1,
+    progress: Callable[[dict[str, Any], int, int], None] | None = None,
+) -> dict[int, dict[str, Any]]:
+    """Run many stars, ``workers`` at a time, appending one line per star to batch.jsonl.
+
+    Each star is checkpointed by its stages, so rerunning a batch skips finished
+    stars cheaply and retries failed ones (design §3.6). With several workers,
+    TLS threads are split between them so the machine is not oversubscribed.
+    """
+    import multiprocessing
+    import os
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+
+    workers = max(1, workers)
+    if workers > 1 and cfg.search.periodic.threads == 0:
+        per = max(1, (os.cpu_count() or 1) // workers)
+        cfg = dataclasses.replace(
+            cfg,
+            search=dataclasses.replace(
+                cfg.search, periodic=dataclasses.replace(cfg.search.periodic, threads=per)
+            ),
+        )
+    log_path = batch_log_path(cfg)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    results: dict[int, dict[str, Any]] = {}
+
+    def record(row: dict[str, Any]) -> None:
+        row["finished_utc"] = now_utc()
+        with log_path.open("a") as fh:
+            fh.write(json.dumps(row) + "\n")
+        results[row["tic"]] = row
+        if progress:
+            progress(row, len(results), len(tics))
+
+    if workers == 1:
+        for tic in tics:
+            record(_batch_worker(cfg, tic, until))
+        return results
+    # spawn, not fork: TLS and numba start their own threads.
+    ctx = multiprocessing.get_context("spawn")
+    with ProcessPoolExecutor(max_workers=workers, mp_context=ctx) as pool:
+        futures = {pool.submit(_batch_worker, cfg, tic, until): tic for tic in tics}
+        for fut in as_completed(futures):
+            try:
+                row = fut.result()
+            except Exception as exc:  # worker died (e.g. out of memory)
+                row = {"tic": futures[fut], "status": "failed", "stage": None, "error": str(exc)}
+            record(row)
+    return results

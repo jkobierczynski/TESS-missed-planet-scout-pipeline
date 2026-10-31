@@ -31,9 +31,17 @@ class RunConfig:
 class TargetsConfig:
     # Northern CVZ: stars within ~12° of the north ecliptic pole.
     ecliptic_lat_min_deg: float = 78.0
+    tmag_min: float = 0.0
     tmag_max: float = 13.0
     teff_min_k: float = 2500.0
     teff_max_k: float = 7500.0
+    # TIC luminosity class to keep ("DWARF", "GIANT"); empty keeps all.
+    lumclass: str = "DWARF"
+    # Drop stars whose TIC contamination ratio exceeds this (blends dilute
+    # and fake transits); a missing ratio is kept. 0 disables the cut.
+    contamination_max: float = 0.1
+    # Brightest N after the cuts; 0 keeps all.
+    max_targets: int = 0
 
 
 @dataclass(frozen=True)
@@ -56,6 +64,10 @@ class FetchConfig:
     # thresholds are calibrated for a given sector span (M2), so keep this the
     # same between calibration and science runs.
     sectors: tuple[int, ...] = ()
+    # Delete a star's downloaded FITS once its stitched light curve is written.
+    # Batch runs over thousands of stars do not fit on disk otherwise; a later
+    # stitch rerun downloads them again.
+    prune_after_stitch: bool = False
 
 
 @dataclass(frozen=True)
@@ -161,6 +173,91 @@ class InjectConfig:
 
 
 @dataclass(frozen=True)
+class TriageConfig:
+    """Cross-match against known objects (design §4, triage stage)."""
+
+    # Downloaded catalogues are reused for this many days.
+    max_age_days: float = 7.0
+    # Fractional period tolerance for "same signal", applied to P and to
+    # 1/2, 2, 1/3, 3 × P.
+    period_tolerance: float = 0.01
+    # Known objects on other stars within this radius sharing the period mark
+    # the detection as a likely blend (21″ TESS pixels: 120″ ≈ 6 px).
+    neighbour_radius_arcsec: float = 120.0
+    # Implied radius above this (≈ 2 R_Jup) marks a "new" signal as an EB.
+    max_radius_rearth: float = 22.4
+    # Duration above this × the longest central transit the TIC R*, M* allow
+    # at the detected period marks a "new" signal as variability. 0 disables.
+    max_duration_factor: float = 1.5
+    # Extra local catalogues (CSV with tic, period_days, name, kind columns),
+    # e.g. the TESS EB catalogue or VSX extracts.
+    extra_catalogs: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class VetConfig:
+    """Vetting checks on triaged signals (design §6, ``vet`` stage)."""
+
+    # Triage classes that get vetted.
+    triage_classes: tuple[str, ...] = ("new", "new_on_known_host")
+    # Local baseline for depths: out to this many durations from mid-transit.
+    baseline_durations: float = 3.0
+    # Below this significance a difference is "pass"; between it and the fail
+    # level, "warn".
+    warn_sigma: float = 2.0
+    odd_even_fail_sigma: float = 3.0
+    # Secondary eclipse: fail level at phase 0.5, and anywhere else (look-elsewhere).
+    secondary_sigma: float = 3.0
+    secondary_sigma_any_phase: float = 5.0
+    # A secondary shallower than this fraction of the primary could be a
+    # planet's occultation: warn instead of fail.
+    occultation_max_ratio: float = 0.05
+    # p-value below which per-sector or per-transit depths are inconsistent.
+    depth_consistency_p: float = 1e-4
+    # Variability: fail when brightenings at the period reach this fraction of
+    # the dip SNR, or a sinusoid at P or P/2 explains this fraction of the dip.
+    max_bump_ratio: float = 0.6
+    max_sine_ratio: float = 0.5
+    max_radius_rearth: float = 22.4
+    # Fitted T14 above this × the longest transit the TIC star allows fails.
+    max_duration_factor: float = 1.5
+    # Signals with this many transits or fewer get the sparse-signal tests:
+    # each transit must stand on its own, and shared dates or gaps fail them.
+    sparse_events: int = 6
+    min_event_snr: float = 3.0
+    max_event_share: float = 0.6
+    # A transit is "shared" when this many other stars dip within the
+    # durations plus this pad.
+    shared_epoch_min_stars: int = 2
+    shared_epoch_pad_days: float = 0.1
+    gap_min_days: float = 0.5
+    # Centroids (SPOC MOM_CENTR): fail when the in-transit shift is this
+    # significant and puts the source this far from the target.
+    centroid_fail_sigma: float = 3.0
+    centroid_min_offset_arcsec: float = 7.0
+    pixel_arcsec: float = 21.0
+    # Gaia DR3 neighbours: search radius (≈ a bright star's aperture) and RUWE limit.
+    neighbour_radius_arcsec: float = 63.0
+    ruwe_max: float = 1.4
+    gaia_tap_url: str = "https://mast.stsci.edu/vo-tap/api/v0.1/gaiadr3"
+    # Re-download pruned light-curve FITS for centroids.
+    centroids: bool = True
+    gaia: bool = True
+    # TRICERATOPS (`scout fpp`): which verdicts get it, draws, sectors used,
+    # fold binning, and the limits of Giacalone et al. (2021): validated below
+    # fpp_validated, likely planet below fpp_likely, both with NFPP < nfpp_max.
+    fpp_verdicts: tuple[str, ...] = ("candidate", "review")
+    fpp_n: int = 1_000_000
+    fpp_max_sectors: int = 3
+    fpp_bin_minutes: float = 10.0
+    fpp_validated: float = 0.015
+    fpp_likely: float = 0.5
+    nfpp_max: float = 0.001
+    fpp_fail: float = 0.9
+    nfpp_fail: float = 0.1
+
+
+@dataclass(frozen=True)
 class ReportConfig:
     dpi: int = 110
 
@@ -174,6 +271,8 @@ class Config:
     detrend: DetrendConfig = field(default_factory=DetrendConfig)
     search: SearchConfig = field(default_factory=SearchConfig)
     inject: InjectConfig = field(default_factory=InjectConfig)
+    triage: TriageConfig = field(default_factory=TriageConfig)
+    vet: VetConfig = field(default_factory=VetConfig)
     report: ReportConfig = field(default_factory=ReportConfig)
     source_path: Path | None = None
 
@@ -287,6 +386,17 @@ def _validate(cfg: Config) -> None:
         errors.append("search.periodic.submultiple_max must be ≥ 1")
     if p.max_signals < 1:
         errors.append("search.periodic.max_signals must be ≥ 1")
+    t = cfg.targets
+    if not 0 <= t.tmag_min < t.tmag_max:
+        errors.append("targets: need 0 ≤ tmag_min < tmag_max")
+    if not 0 < t.ecliptic_lat_min_deg < 90:
+        errors.append("targets.ecliptic_lat_min_deg must be in (0, 90)")
+    if t.max_targets < 0:
+        errors.append("targets.max_targets must be ≥ 0")
+    if not all(isinstance(x, str) for x in cfg.triage.extra_catalogs):
+        errors.append("triage.extra_catalogs must be a list of file paths")
+    if cfg.triage.period_tolerance <= 0 or cfg.triage.neighbour_radius_arcsec < 0:
+        errors.append("triage: period_tolerance must be > 0, neighbour_radius_arcsec ≥ 0")
     i = cfg.inject
     if i.n_injections < 0 or i.n_scrambles < 0:
         errors.append("inject.n_injections and inject.n_scrambles must be ≥ 0")

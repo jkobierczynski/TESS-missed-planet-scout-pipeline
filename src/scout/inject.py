@@ -219,7 +219,9 @@ def config_key(cfg: Config, upstream: str) -> str:
         for k, v in asdict(cfg.inject).items()
         if k not in {"n_injections", "n_scrambles", "false_alarm_target"}
     }
-    search = dataclasses.replace(cfg.search.periodic, sde_threshold=0.0, snr_threshold=0.0)
+    search = dataclasses.replace(
+        cfg.search.periodic, sde_threshold=0.0, snr_threshold=0.0, threads=0
+    )
     return _key("inject", cfg.detrend, search, law, upstream)
 
 

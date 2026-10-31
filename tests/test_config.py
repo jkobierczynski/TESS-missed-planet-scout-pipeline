@@ -88,3 +88,12 @@ def test_overrides_and_digest(tmp_path):
     assert over.detrend.window_factor == 5.0
     assert over.digest() != base.digest()
     assert load_config().digest() == base.digest()
+
+
+def test_targets_and_triage_validation(tmp_path):
+    with pytest.raises(ConfigError, match="tmag_min"):
+        load_config(write(tmp_path, "[targets]\ntmag_min = 12.0\ntmag_max = 10.0\n"))
+    with pytest.raises(ConfigError, match="extra_catalogs"):
+        load_config(write(tmp_path, "[triage]\nextra_catalogs = [1]\n"))
+    cfg = load_config(REPO / "config" / "cvz-north.toml")
+    assert cfg.fetch.prune_after_stitch and cfg.fetch.sectors == tuple(range(14, 27))

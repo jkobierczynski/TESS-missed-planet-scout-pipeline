@@ -91,3 +91,14 @@ def test_slow_rotator_and_transits_not_prewhitened(raw_lc, cfg):
     # 8 d rotation is the biweight's job; a deep transit must not trigger the fit.
     flat = detrend(stitch(raw_lc, cfg.stitch), cfg.detrend)
     assert not flat.meta["detrend"]["rotation_prewhiten"]["applied"]
+
+
+def test_sector_with_negative_median_is_dropped(raw_lc, cfg):
+    lc = raw_lc.select(np.ones(len(raw_lc), bool))
+    lc.flux[lc.sector == 15] *= -1  # over-subtracted background
+    st = stitch(lc, cfg.stitch)
+    assert st.sectors == [14]
+    assert list(st.meta["stitch"]["sectors_dropped_bad_median"]) == [15]
+    only_bad = lc.select(lc.sector == 15)
+    with pytest.raises(ValueError, match="no sector"):
+        stitch(only_bad, cfg.stitch)

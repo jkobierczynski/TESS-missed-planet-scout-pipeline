@@ -27,11 +27,20 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# MAST access. Not needed for tests or for working on already-cached data.
-mast = ["astroquery>=0.4.7"]
+# MAST access (light curves, TIC, Gaia DR3 for vetting). Not needed for tests
+# or for working on already-cached data.
+mast = ["astroquery>=0.4.7", "pyvo>=1.4"]
 # Physical (limb-darkened) transit models for synthetic data and injection.
-# Without it the generator falls back to a trapezoid model.
+# Without it the generator falls back to a trapezoid model; `scout vet` needs it.
 models = ["batman-package>=2.4.9"]
+# False-positive probabilities (`scout fpp`). TRICERATOPS needs lightkurve,
+# which does not build on Python 3.13: use a 3.11/3.12 environment for it.
+# It also holds NumPy below 2 there, which recent pyarrow no longer supports.
+fpp = [
+    "triceratops>=1.1; python_version < '3.13'",
+    "pyarrow>=14,<20; python_version < '3.13'",
+    "pyvo>=1.4",
+]
 dev = ["pytest>=8", "ruff>=0.5"]
 
 [project.scripts]

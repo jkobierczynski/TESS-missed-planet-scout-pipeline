@@ -21,8 +21,14 @@ def test_bad_config_exit_code(tmp_path, capsys):
 
 
 def test_planned_commands_exit_2(capsys):
-    assert main(["vet", "123"]) == 2
-    assert "M5" in capsys.readouterr().err
+    assert main(["ctoi", "123"]) == 2
+    assert "M6" in capsys.readouterr().err
+
+
+def test_vet_needs_triage(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    assert main(["vet"]) == 2
+    assert "scout triage" in capsys.readouterr().err
 
 
 def test_bad_tic():
@@ -86,3 +92,54 @@ def test_failed_star_recorded(tmp_path, monkeypatch, capsys):
     assert "FAILED in fetch: offline" in capsys.readouterr().err
     run_json = json.loads((tmp_path / "results/t/run.json").read_text())
     assert run_json["invocations"][-1]["status"]["77"].startswith("failed")
+
+
+def test_prune_after_stitch_and_refetch(tmp_path, monkeypatch):
+    import dataclasses
+
+    from scout import pipeline
+    from scout.config import load_config
+    from scout.synthetic import generate, preset
+
+    cfg = load_config(overrides={"run": {"name": "p", "results_dir": str(tmp_path)}})
+    cfg = dataclasses.replace(cfg, fetch=dataclasses.replace(cfg.fetch, prune_after_stitch=True))
+    fits = tmp_path / "x.fits"
+    lc = generate(preset("quiet", sectors=(14,)))
+    calls = []
+
+    def fake_fetch(tic, cache_dir, fcfg):
+        calls.append(tic)
+        fits.write_bytes(b"x")
+        return {"tic": tic, "star": {}, "products": [{"local_path": str(fits), "source": "SPOC"}]}
+
+    monkeypatch.setattr(pipeline.fetch_mod, "fetch", fake_fetch)
+    monkeypatch.setattr(pipeline.fetch_mod, "load_from_manifest", lambda m, c: [lc])
+    key = pipeline.stage_fetch(cfg, 5)
+    pipeline.stage_stitch(cfg, 5, key)
+    assert not fits.exists() and calls == [5]
+    # Stitch again (forced): the FITS are gone, so they are fetched again first.
+    pipeline.stage_stitch(cfg, 5, key, force=True)
+    assert calls == [5, 5]
+    # Toggling pruning is not an input: the fetch key stays the same.
+    off = dataclasses.replace(cfg, fetch=dataclasses.replace(cfg.fetch, prune_after_stitch=False))
+    assert pipeline.stage_fetch(off, 5) == key
+
+
+def test_thread_count_is_not_part_of_the_search_key(tmp_path, monkeypatch):
+    import dataclasses
+
+    from scout import pipeline
+    from scout.config import load_config
+
+    cfg = load_config(overrides={"run": {"name": "k", "results_dir": str(tmp_path)}})
+    keys = []
+    monkeypatch.setattr(pipeline, "_run_stage", lambda name, out, key, force, produce: (key, 0))
+    for threads in (0, 2):
+        c = dataclasses.replace(
+            cfg,
+            search=dataclasses.replace(
+                cfg.search, periodic=dataclasses.replace(cfg.search.periodic, threads=threads)
+            ),
+        )
+        keys.append(pipeline.stage_search(c, 1, "up"))
+    assert keys[0] == keys[1]

@@ -7,16 +7,23 @@ name = "cvz-north"
 results_dir = "results"
 cache_dir = "cache"
 
-[targets]                      # used from M3
+[targets]
 ecliptic_lat_min_deg = 78.0
+tmag_min = 0.0
 tmag_max = 13.0
 teff_min_k = 2500.0
 teff_max_k = 7500.0
+lumclass = "DWARF"
+contamination_max = 0.1        # TIC flux contamination ratio
+max_targets = 0                # 0 = all; brightest first
 
 [fetch]
 sources = ["SPOC", "TESS-SPOC", "QLP"]   # preference order per sector
 cadences_s = [120, 200, 600, 1800]
 timeout_s = 300.0
+# Same span as the M2 calibration (TESS year 2), so the thresholds apply.
+sectors = [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26]
+prune_after_stitch = true      # ~20 MB of FITS per star otherwise
 
 [fetch.flux_columns]
 SPOC = "PDCSAP_FLUX"
@@ -63,6 +70,14 @@ submultiple_max = 5
 duration_min_hours = 1.0
 duration_max_hours = 15.0
 snr_threshold = 7.0
+
+[triage]
+max_age_days = 7.0
+period_tolerance = 0.01
+neighbour_radius_arcsec = 120.0
+max_radius_rearth = 22.4       # ≈ 2 R_Jup: bigger is an EB
+max_duration_factor = 1.5      # × longest transit the star allows at that period
+extra_catalogs = []            # local CSVs: tic, period_days, name, kind
 
 [report]
 dpi = 110

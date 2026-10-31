@@ -14,9 +14,6 @@ from scout.config import Config, ConfigError, load_config
 
 # Stages from the design that later milestones fill in.
 _PLANNED = {
-    "targets": "M3 (batch CVZ target selection from TIC/Gaia)",
-    "triage": "M3 (cross-match against TOI/CTOI, NASA Exoplanet Archive, EB catalogue, VSX)",
-    "vet": "M5 (centroids, Gaia neighbours, TRICERATOPS)",
     "ctoi": "M6 (ExoFOP CTOI package)",
     "ephem": "M6 (transit windows from the observatory)",
 }
@@ -57,6 +54,8 @@ def _load(args: argparse.Namespace) -> Config:
         inject["n_scrambles"] = args.scrambles
     if inject:
         overrides["inject"] = inject
+    if getattr(args, "max", None) is not None:
+        overrides["targets"] = {"max_targets": args.max}
     return load_config(args.config, overrides or None)
 
 
@@ -106,6 +105,48 @@ def build_parser() -> argparse.ArgumentParser:
         _add_common(p)
         p.add_argument("tic", nargs="+", type=_parse_tic, help="TIC ID(s)")
         p.add_argument("--force", action="store_true", help="rerun even if up to date")
+
+    p = sub.add_parser("targets", help="select target stars from the TIC (writes targets.csv)")
+    _add_common(p)
+    p.add_argument("--max", type=int, help="override targets.max_targets")
+
+    p = sub.add_parser(
+        "batch",
+        help="run every star in targets.csv (resumable, parallel)",
+        description="Runs fetch → report for each target, skipping finished stars and "
+        "retrying failed ones. One line per star goes to results/<run>/batch.jsonl.",
+    )
+    _add_common(p)
+    p.add_argument("--targets", type=Path, help="CSV with a tic column (default: the run's)")
+    p.add_argument("--workers", type=int, default=1, help="stars processed at once")
+    p.add_argument("--limit", type=int, help="only the first N targets")
+    p.add_argument(
+        "--until", choices=("fetch", "stitch", "detrend", "search", "report"), default="report"
+    )
+
+    p = sub.add_parser(
+        "triage", help="cross-match detections with known objects; write candidates + summary"
+    )
+    _add_common(p)
+
+    p = sub.add_parser(
+        "vet",
+        help="run the vetting checklist on triaged signals; write reports + vet_summary.html",
+        description="Vets every signal whose triage class is in vet.triage_classes. "
+        "Needs `scout triage` first. Downloads pruned light-curve FITS again for centroids "
+        "and queries Gaia DR3 at MAST.",
+    )
+    _add_common(p)
+    p.add_argument("tic", nargs="*", type=_parse_tic, help="only these stars")
+    p.add_argument("--workers", type=int, default=1, help="stars vetted at once")
+
+    p = sub.add_parser(
+        "fpp",
+        help="TRICERATOPS false-positive probabilities for signals that survived `scout vet`",
+        description="Needs the [fpp] extra (TRICERATOPS), which installs on Python ≤ 3.12 only.",
+    )
+    _add_common(p)
+    p.add_argument("tic", nargs="*", type=_parse_tic, help="only these stars (any verdict)")
 
     p = sub.add_parser(
         "inject",
@@ -198,6 +239,109 @@ def _cmd_inject(cfg: Config, args: argparse.Namespace) -> int:
     return rc
 
 
+def _cmd_targets(cfg: Config) -> int:
+    from scout.targets import query_targets, targets_path, write_targets
+
+    rows = query_targets(cfg.targets, cfg.fetch.timeout_s)
+    out = write_targets(rows, targets_path(cfg))
+    if rows:
+        print(f"{len(rows)} targets, Tmag {rows[0]['tmag']:.2f}–{rows[-1]['tmag']:.2f} -> {out}")
+    else:
+        print(f"no targets match the cuts -> {out}")
+    return 0
+
+
+def _cmd_batch(cfg: Config, args: argparse.Namespace) -> int:
+    import time
+
+    from scout.pipeline import record_invocation, run_batch
+    from scout.targets import read_targets, targets_path
+
+    path = args.targets or targets_path(cfg)
+    if not Path(path).exists():
+        print(f"no target list at {path}: run `scout targets` first", file=sys.stderr)
+        return 2
+    tics = [r["tic"] for r in read_targets(path)]
+    if args.limit:
+        tics = tics[: args.limit]
+    start = time.monotonic()
+
+    def progress(row: dict, done: int, total: int) -> None:
+        rate = (time.monotonic() - start) / done
+        eta_h = rate * (total - done) / 3600
+        what = (
+            f"{row.get('n_passing', 0)} above threshold"
+            if row["status"] == "ok"
+            else f"FAILED in {row.get('stage')}: {row.get('error')}"
+        )
+        print(
+            f"[{done}/{total}] TIC {row['tic']}: {what} ({row.get('seconds', '?')} s; "
+            f"ETA {eta_h:.1f} h)",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    res = run_batch(cfg, tics, until=args.until, workers=args.workers, progress=progress)
+    status = {t: r["status"] for t, r in res.items()}
+    record_invocation(cfg, "batch", tics, status)
+    failed = sum(s != "ok" for s in status.values())
+    print(f"{len(tics) - failed} ok, {failed} failed; log: {cfg.run_dir / 'batch.jsonl'}")
+    return 1 if failed else 0
+
+
+def _cmd_triage(cfg: Config) -> int:
+    from scout.triage import triage_run
+
+    res = triage_run(cfg)
+    counts = ", ".join(f"{k} {v}" for k, v in sorted(res["counts"].items()))
+    print(f"{res['n_stars']} stars, {counts or 'no detections'}")
+    print(f"summary: {res['summary']}")
+    return 0
+
+
+def _cmd_vet(cfg: Config, args: argparse.Namespace) -> int:
+    from scout.vet.run import vet_run
+
+    def progress(tic: int, res: object, done: int, total: int) -> None:
+        if isinstance(res, dict):
+            what = f"ERROR {res.get('error')}"
+        else:
+            what = ", ".join(f"{r['index']}: {r['verdict']}" for r in res)  # type: ignore[attr-defined]
+        print(f"[{done}/{total}] TIC {tic}: {what}", file=sys.stderr, flush=True)
+
+    try:
+        res = vet_run(cfg, workers=args.workers, tics=args.tic or None, progress=progress)
+    except FileNotFoundError as exc:
+        print(f"vet: {exc}", file=sys.stderr)
+        return 2
+    counts = ", ".join(f"{k} {v}" for k, v in sorted(res["counts"].items()))
+    print(f"{counts or 'nothing vetted'}; {len(res['errors'])} errors")
+    print(f"summary: {res['summary']}")
+    return 1 if res["errors"] else 0
+
+
+def _cmd_fpp(cfg: Config, args: argparse.Namespace) -> int:
+    try:
+        import triceratops  # noqa: F401
+
+        from scout.vet.fpp import fpp_run
+    except ImportError:
+        print(
+            "fpp: TRICERATOPS is not installed. It needs Python ≤ 3.12: "
+            'pip install -e ".[mast,models,fpp]" in such an environment.',
+            file=sys.stderr,
+        )
+        return 2
+
+    def progress(res: dict, check: object, done: int, total: int) -> None:
+        what = getattr(check, "detail", "ERROR")
+        print(f"[{done}/{total}] TIC {res['tic']}.{res['index']}: {what}", file=sys.stderr)
+
+    res = fpp_run(cfg, tics=args.tic or None, progress=progress)
+    print(f"{len(res['done'])} done, {len(res['errors'])} errors; summary: {res['summary']}")
+    return 1 if res["errors"] else 0
+
+
 def _cmd_calibrate(cfg: Config) -> int:
     from scout.inject import calibrate
 
@@ -262,6 +406,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _cmd_inject(cfg, args)
     if args.command == "calibrate":
         return _cmd_calibrate(cfg)
+    if args.command == "targets":
+        return _cmd_targets(cfg)
+    if args.command == "batch":
+        return _cmd_batch(cfg, args)
+    if args.command == "triage":
+        return _cmd_triage(cfg)
+    if args.command == "vet":
+        return _cmd_vet(cfg, args)
+    if args.command == "fpp":
+        return _cmd_fpp(cfg, args)
     return _cmd_stage(cfg, args)
 
 
