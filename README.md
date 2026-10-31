@@ -20,6 +20,43 @@ pip install -e ".[mast,models,dev]"
 - `mast` adds astroquery, needed only for `scout fetch`.
 - `models` adds batman for limb-darkened synthetic transits (a trapezoid is used without it).
 
+## Run a survey on your own computer
+
+One command does the whole search: it selects the targets, downloads and
+searches every star, cross-matches the detections with known planets and TOIs,
+and vets what is new. It needs Python 3.12 (3.11 works too) and an internet
+connection to MAST.
+
+```bash
+git clone https://github.com/jkobierczynski/TESS-missed-planet-scout-pipeline.git
+cd TESS-missed-planet-scout-pipeline
+python3.12 -m venv .venv
+source .venv/bin/activate          # Windows: py -3.12 -m venv .venv  then  .venv\Scripts\activate
+pip install -e ".[mast,models,fpp]"
+
+scout survey -c config/cvz-north-t10.toml
+```
+
+On Windows, batman (in `models`) compiles from source and needs the Microsoft
+C++ Build Tools; running the same commands in WSL (Ubuntu) avoids that.
+
+`config/cvz-north-t10.toml` covers the 1,726 northern-CVZ dwarfs with Tmag
+8.8–10 (the 500 brighter ones were run as `cvz-north`). Stop it any time with
+Ctrl-C, or let the machine sleep: the same command continues where it stopped,
+and failed downloads are retried. By default it uses half your CPU cores
+(`--workers N` to change). A 4-core machine did about 100 stars an hour, and
+each star keeps about 11 MB in `results/`, so this run needs about 20 GB of
+disk. `--limit 50` makes a quick trial run on the 50 brightest stars.
+
+When it finishes, open `results/cvz-north-t10/vet_summary.html`. Signals with
+the verdict `candidate` or `review` then get their false-positive probability:
+
+```bash
+scout fpp -c config/cvz-north-t10.toml
+```
+
+Results stay on your machine: `results/` and `cache/` are never committed.
+
 ## Use
 
 Every stage is a subcommand. Stages are checkpointed: rerunning skips anything
@@ -86,13 +123,8 @@ of transit-length averages out of transit. Each signal gets a page in
 `candidate`. None of it replaces reading the page.
 
 TRICERATOPS needs lightkurve, which does not build on Python 3.13, so `fpp`
-runs from its own environment:
-
-```bash
-uv venv -p 3.12 .venv-fpp && . .venv-fpp/bin/activate
-pip install -e ".[mast,models,fpp]"
-scout fpp -c config/cvz-north.toml
-```
+needs a Python 3.11 or 3.12 environment with the `fpp` extra (the survey
+setup above). Everything else in scout works there too.
 
 It fills in checklist item 10 (FPP and NFPP) for signals whose verdict is in
 `vet.fpp_verdicts`, using the SPOC apertures and Gaia DR3 from MAST.
