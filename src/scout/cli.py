@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -123,6 +124,25 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--until", choices=("fetch", "stitch", "detrend", "search", "report"), default="report"
     )
+
+    p = sub.add_parser(
+        "survey",
+        help="the whole survey in one go: targets, search, triage, vetting (rerun to resume)",
+        description="Runs `targets` (once), `batch` with automatic retries of failed stars, "
+        "`triage` and `vet`. Interrupt it any time; the same command continues where it "
+        "stopped.",
+    )
+    _add_common(p)
+    p.add_argument(
+        "--workers",
+        type=int,
+        default=max(1, (os.cpu_count() or 2) // 2),
+        help="stars processed at once (default: half the CPU cores)",
+    )
+    p.add_argument("--limit", type=int, help="only the first (brightest) N targets")
+    p.add_argument("--retries", type=int, default=2, help="extra passes over failed stars")
+    p.add_argument("--new-targets", action="store_true", help="query the TIC again")
+    p.add_argument("--skip-vet", action="store_true", help="stop after triage")
 
     p = sub.add_parser(
         "triage", help="cross-match detections with known objects; write candidates + summary"
@@ -251,19 +271,9 @@ def _cmd_targets(cfg: Config) -> int:
     return 0
 
 
-def _cmd_batch(cfg: Config, args: argparse.Namespace) -> int:
+def _batch_progress():
     import time
 
-    from scout.pipeline import record_invocation, run_batch
-    from scout.targets import read_targets, targets_path
-
-    path = args.targets or targets_path(cfg)
-    if not Path(path).exists():
-        print(f"no target list at {path}: run `scout targets` first", file=sys.stderr)
-        return 2
-    tics = [r["tic"] for r in read_targets(path)]
-    if args.limit:
-        tics = tics[: args.limit]
     start = time.monotonic()
 
     def progress(row: dict, done: int, total: int) -> None:
@@ -281,12 +291,80 @@ def _cmd_batch(cfg: Config, args: argparse.Namespace) -> int:
             flush=True,
         )
 
-    res = run_batch(cfg, tics, until=args.until, workers=args.workers, progress=progress)
+    return progress
+
+
+def _cmd_batch(cfg: Config, args: argparse.Namespace) -> int:
+    from scout.pipeline import record_invocation, run_batch
+    from scout.targets import read_targets, targets_path
+
+    path = args.targets or targets_path(cfg)
+    if not Path(path).exists():
+        print(f"no target list at {path}: run `scout targets` first", file=sys.stderr)
+        return 2
+    tics = [r["tic"] for r in read_targets(path)]
+    if args.limit:
+        tics = tics[: args.limit]
+    res = run_batch(cfg, tics, until=args.until, workers=args.workers, progress=_batch_progress())
     status = {t: r["status"] for t, r in res.items()}
     record_invocation(cfg, "batch", tics, status)
     failed = sum(s != "ok" for s in status.values())
     print(f"{len(tics) - failed} ok, {failed} failed; log: {cfg.run_dir / 'batch.jsonl'}")
     return 1 if failed else 0
+
+
+def _cmd_survey(cfg: Config, args: argparse.Namespace) -> int:
+    """targets → batch → triage → vet, each step resumable; rerun to continue."""
+    from scout.pipeline import record_invocation, run_batch
+    from scout.targets import read_targets, targets_path
+
+    def step(text: str) -> None:
+        print(f"\n== {text}", file=sys.stderr, flush=True)
+
+    try:
+        path = targets_path(cfg)
+        if not path.exists() or args.new_targets:
+            step("1/4 targets: querying the TIC at MAST")
+            if _cmd_targets(cfg) != 0:
+                return 1
+        else:
+            step(f"1/4 targets: reusing {path}")
+        tics = [r["tic"] for r in read_targets(path)]
+        if args.limit:
+            tics = tics[: args.limit]
+        step(
+            f"2/4 search: {len(tics)} stars, {args.workers} at a time (finished stars are skipped)"
+        )
+        status: dict[int, str] = {}
+        for attempt in range(1 + args.retries):
+            todo = [t for t in tics if status.get(t, "failed") != "ok"]
+            if not todo:
+                break
+            if attempt:
+                step(f"2/4 search: retrying {len(todo)} failed stars (MAST hiccups are common)")
+            res = run_batch(cfg, todo, workers=args.workers, progress=_batch_progress())
+            status.update({t: r["status"] for t, r in res.items()})
+        record_invocation(cfg, "survey", tics, status)
+        failed = [t for t in tics if status.get(t) != "ok"]
+        if failed:
+            print(f"{len(failed)} stars still failed; see {cfg.run_dir / 'batch.jsonl'}")
+        step("3/4 triage: cross-matching with TOI, CTOI and confirmed planets")
+        _cmd_triage(cfg)
+        if args.skip_vet:
+            return 0
+        step("4/4 vetting: the design §6 checklist on every new signal")
+        code = _cmd_vet(cfg, argparse.Namespace(tic=[], workers=args.workers))
+    except KeyboardInterrupt:
+        print(
+            "\nStopped. Nothing finished is lost: run the same command again to continue.",
+            file=sys.stderr,
+        )
+        return 130
+    print(
+        f"\nDone. Open {cfg.run_dir / 'vet_summary.html'} (vetting) and "
+        f"{cfg.run_dir / 'summary.html'} (all detections)."
+    )
+    return code
 
 
 def _cmd_triage(cfg: Config) -> int:
@@ -410,6 +488,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _cmd_targets(cfg)
     if args.command == "batch":
         return _cmd_batch(cfg, args)
+    if args.command == "survey":
+        return _cmd_survey(cfg, args)
     if args.command == "triage":
         return _cmd_triage(cfg)
     if args.command == "vet":

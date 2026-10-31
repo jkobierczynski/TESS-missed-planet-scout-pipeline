@@ -2,6 +2,8 @@
 # Candidates, reports and downloaded data never go into git until submitted as CTOIs.
 /results/
 /cache/
+# TRICERATOPS writes its field-star population to the working directory.
+*_gaia_background.csv
 
 # Python
 __pycache__/

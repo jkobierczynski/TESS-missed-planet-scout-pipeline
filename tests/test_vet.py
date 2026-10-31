@@ -155,3 +155,24 @@ def test_same_period_found_again_off_phase_is_variability():
     assert ck.check_variability(fo, CFG, [0.2]).status == "pass"
     c = ck.check_variability(fo, CFG, [0.2, 3.5])
     assert c.status == "fail" and "not confined" in c.detail
+
+
+def test_spoc_file_stands_in_for_a_tesscut_cutout(tmp_path):
+    from astropy.io import fits
+
+    from scout.vet.fpp import _Cutout, spoc_aperture
+
+    ap = np.zeros((5, 6), dtype=np.int32)
+    ap[1:3, 2:4] = 2 | 1  # optimal-aperture pixels
+    h = fits.Header()
+    h.update(CRVAL1P=1000, CRVAL2P=500, CTYPE1="RA---TAN", CTYPE2="DEC--TAN")
+    h.update(CRVAL1=270.0, CRVAL2=66.0, CRPIX1=3.0, CRPIX2=3.0, CDELT1=-0.0058, CDELT2=0.0058)
+    path = tmp_path / "lc.fits"
+    fits.HDUList([fits.PrimaryHDU(), fits.ImageHDU(ap, h, name="APERTURE")]).writeto(path)
+
+    pix = spoc_aperture(path)
+    assert sorted(map(tuple, pix)) == [(1002, 501), (1002, 502), (1003, 501), (1003, 502)]
+    cut = _Cutout(str(path))
+    assert cut.hdu[1].header["1CRV4P"] == 1000 and cut.hdu[1].header["2CRV4P"] == 500
+    assert cut.hdu[1].data["FLUX"][0].shape == (5, 6)
+    assert cut.hdu[2].header["CRVAL1"] == 270.0

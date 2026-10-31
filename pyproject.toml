@@ -9,7 +9,7 @@ description = "Find, vet and package TESS transit candidates missed by SPOC and 
 readme = "README.md"
 license = "GPL-3.0-or-later"
 license-files = ["LICENSE"]
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.14"
 authors = [{ name = "Jurgen Kobierczynski" }]
 classifiers = [
     "Programming Language :: Python :: 3",
