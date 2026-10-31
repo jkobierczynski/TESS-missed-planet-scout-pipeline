@@ -99,8 +99,10 @@ def plot_full_phase(f: ck.Folded, sec: dict[str, Any] | None, dpi: int) -> str:
             lw=0.8,
             alpha=0.6,
         )
-    lo = np.nanpercentile(yb, 1) if len(yb) else 1 - d
-    ax.set_ylim(min(lo, 1 - 1.1 * d), 1 + 0.4 * d + 3 * np.nanmedian(sb) if len(sb) else 1 + d)
+    if len(yb):
+        lo, hi = np.nanpercentile(yb, [0.5, 99.5])
+        pad = 0.15 * (hi - lo) + 3 * np.nanmedian(sb)
+        ax.set_ylim(min(lo, np.nanmedian(yb) - 1.1 * d) - pad, hi + pad)
     ax.set_xlim(-0.25, 0.75)
     ax.set_xlabel("orbital phase (transit at 0; dotted line at 0.5; red: deepest off-transit dip)")
     ax.set_ylabel("binned flux")

@@ -137,9 +137,12 @@ def check_centroid(
         f"in-transit shift {shift * 1e3:.2f} mpx ({sig:.1f}σ, {len(shifts)} transits): "
         f"source {offset:.1f} ± {offset_err:.1f}″ from the target"
     )
-    if sig >= cfg.centroid_fail_sigma and offset >= cfg.centroid_min_offset_arcsec:
+    # With hundreds of transits even the target's own dimming moves the centroid
+    # measurably (other light in the aperture); what matters is where the source is.
+    far = offset >= max(cfg.centroid_min_offset_arcsec, cfg.centroid_fail_sigma * offset_err)
+    if sig >= cfg.centroid_fail_sigma and far:
         status = "fail"
-    elif sig >= cfg.warn_sigma:
+    elif sig >= cfg.warn_sigma and far:
         status = "warn"
     elif offset_err > 2 * cfg.pixel_arcsec:
         status = "warn"

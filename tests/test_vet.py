@@ -146,3 +146,12 @@ def test_gaia_neighbour_that_could_make_the_dip():
     rows[0]["ruwe"] = 2.5
     c = check_gaia([dict(r) for r in rows], star, 20000.0, "pass", CFG)
     assert c.status == "warn"
+
+
+def test_same_period_found_again_off_phase_is_variability():
+    t, f, s = lc()
+    f = f * planet(t)
+    fo = fold(t, f, s)
+    assert ck.check_variability(fo, CFG, [0.2]).status == "pass"
+    c = ck.check_variability(fo, CFG, [0.2, 3.5])
+    assert c.status == "fail" and "not confined" in c.detail

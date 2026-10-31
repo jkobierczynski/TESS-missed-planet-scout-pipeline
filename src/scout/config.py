@@ -213,14 +213,14 @@ class VetConfig:
     # planet's occultation: warn instead of fail.
     occultation_max_ratio: float = 0.05
     # p-value below which per-sector or per-transit depths are inconsistent.
-    depth_consistency_p: float = 0.001
+    depth_consistency_p: float = 1e-4
     # Variability: fail when brightenings at the period reach this fraction of
     # the dip SNR, or a sinusoid at P or P/2 explains this fraction of the dip.
     max_bump_ratio: float = 0.6
     max_sine_ratio: float = 0.5
     max_radius_rearth: float = 22.4
-    # Fitted stellar density vs TIC: below 1/this the transit is too long.
-    max_density_factor: float = 8.0
+    # Fitted T14 above this × the longest transit the TIC star allows fails.
+    max_duration_factor: float = 1.5
     # Signals with this many transits or fewer get the sparse-signal tests:
     # each transit must stand on its own, and shared dates or gaps fail them.
     sparse_events: int = 6

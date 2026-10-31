@@ -99,6 +99,7 @@ def _fits_files(cfg: Config, tic: int) -> tuple[list[tuple[str, str]], dict[int,
 def vet_signal(
     cfg: Config,
     row: dict[str, Any],
+    all_rows: list[dict[str, Any]],
     flat: LightCurve,
     star: dict[str, Any],
     files: list[tuple[str, str]],
@@ -123,7 +124,7 @@ def vet_signal(
         events = f.event_depths()
     checks: list[ck.Check] = [
         ck.check_shape(fit),
-        ck.check_variability(f, vc),
+        ck.check_variability(f, vc, _repeats(row, all_rows)),
         ck.check_odd_even(f, events, vc),
         ck.check_secondary(f, vc),
         ck.check_depth_consistency(f, events, sources, vc),
@@ -177,13 +178,42 @@ def vet_signal(
     }
 
 
+def _same_period(p: float, q: float, tol: float = 0.01) -> bool:
+    from scout.triage import period_match
+
+    return period_match(p, q, tol) is not None
+
+
+def _repeats(row: dict[str, Any], all_rows: list[dict[str, Any]]) -> list[float]:
+    """Phases (in durations) of the star's other detections at this period.
+
+    The search masks each signal before looking again; finding the same period
+    at another phase means the dips are not confined to the transits.
+    """
+    out = []
+    for o in all_rows:
+        if o["tic"] != row["tic"] or o["index"] == row["index"]:
+            continue
+        if not _same_period(o["period_days"], row["period_days"]):
+            continue
+        dt = ck.phase_days(np.array([o["t0_btjd"]]), row["period_days"], row["t0_btjd"])[0]
+        out.append(float(dt * 24 / row["duration_hours"]))
+    return out
+
+
 def _mask_others(
     flat: LightCurve, row: dict[str, Any], all_rows: list[dict[str, Any]]
 ) -> LightCurve:
-    """Remove the star's other passing signals so they do not bias this one."""
+    """Remove the star's other passing signals so they do not bias this one.
+
+    Signals at this period (or an alias) are the same signal found again and
+    stay in: masking them would cut away the light curve around this one.
+    """
     keep = np.ones(len(flat), bool)
     for o in all_rows:
         if o["tic"] != row["tic"] or o["index"] == row["index"] or not o["passes_threshold"]:
+            continue
+        if _same_period(o["period_days"], row["period_days"]):
             continue
         ph = ck.phase_days(flat.time, o["period_days"], o["t0_btjd"])
         keep &= np.abs(ph) > o["duration_hours"] / 24
@@ -218,7 +248,7 @@ def vet_star(
     out = []
     for row in rows:
         flat = _mask_others(flat_all, row, all_rows)
-        res = vet_signal(cfg, row, flat, star, files, sources, other_events, gaia_rows)
+        res = vet_signal(cfg, row, all_rows, flat, star, files, sources, other_events, gaia_rows)
         name = f"TIC{tic}-{row['index']}"
         res["report"] = f"vet/{name}.html"
         write_vet_report(vet_dir(cfg) / f"{name}.html", cfg, row, star, res, gaia_rows)

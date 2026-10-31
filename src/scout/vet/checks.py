@@ -126,6 +126,8 @@ class Folded:
     # really has once red noise is counted (Pont et al. 2006).
     sigma_box: float
     points_per_event: float
+    # Per sector (sigma, sigma_box): noise differs a lot between sectors.
+    sector_noise: dict[int, tuple[float, float]] = field(default_factory=dict)
 
     def err_for(self, n_points: int, n_events: float) -> float:
         white = self.sigma / np.sqrt(max(n_points, 1))
@@ -149,6 +151,13 @@ class Folded:
         sigma = robust_std(flux[oot])
         ep = epochs(time, eph.period_days, eph.t0_btjd)
         n_ev = max(len(np.unique(ep[in_tr])), 1)
+        noise = {}
+        for sec in np.unique(sector):
+            m = oot & (sector == sec)
+            noise[int(sec)] = (
+                robust_std(flux[m]),
+                _box_scatter(time[m], flux[m], 0.8 * eph.dur_days),
+            )
         return cls(
             time,
             flux,
@@ -161,6 +170,7 @@ class Folded:
             sigma,
             _box_scatter(time[oot], flux[oot], 0.8 * eph.dur_days),
             max(int(in_tr.sum()) / n_ev, 1.0),
+            noise,
         )
 
     def event_depths(self) -> dict[int, Depth]:
@@ -168,9 +178,12 @@ class Folded:
         out: dict[int, Depth] = {}
         for e in np.unique(self.epoch[self.in_transit]):
             m = self.epoch == e
-            d = box_depth(self.flux, m & self.in_transit, m & self.near, self.sigma)
+            sec = int(np.bincount(self.sector[m & self.in_transit].astype(int)).argmax())
+            sig, box = self.sector_noise.get(sec, (self.sigma, self.sigma_box))
+            d = box_depth(self.flux, m & self.in_transit, m & self.near, sig)
             if np.isfinite(d.depth):
-                out[int(e)] = Depth(d.depth, self.err_for(d.n_points, 1), d.n_points)
+                err = float(np.nanmax([sig / np.sqrt(max(d.n_points, 1)), box]))
+                out[int(e)] = Depth(d.depth, err, d.n_points)
         return out
 
     def coverage(self) -> dict[int, bool]:
@@ -199,6 +212,12 @@ class Folded:
         if events is None:
             return d
         picked = [events[e] for e in np.unique(self.epoch[select & self.in_transit]) if e in events]
+        errs = np.array([p.err for p in picked if np.isfinite(p.err) and p.err > 0])
+        if len(errs):
+            # The transits' own (per-sector) errors combined.
+            comb = float(1 / np.sqrt(np.sum(1 / errs**2)))
+            if comb > d.err:
+                d = Depth(d.depth, comb, d.n_points)
         if len(picked) >= 4:
             vals = np.array([p.depth for p in picked])
             floor = robust_std(vals) / np.sqrt(len(vals))
@@ -300,6 +319,7 @@ def fit_transit(f: Folded, radius_rsun: float | None, mass_msun: float | None) -
     t23 = _t14(eph.period_days, -k, a, b)
     return {
         "ok": True,
+        "period_days": eph.period_days,
         "dt0_days": float(dt0),
         "rp_rs": float(k),
         "a_rs": float(a),
@@ -406,8 +426,13 @@ def _scan_boxes(
     return depth, snr
 
 
-def check_variability(f: Folded, cfg: VetConfig) -> Check:
-    """Bumps as strong as the dips, or a sinusoid that explains the dip, mean variability."""
+def check_variability(f: Folded, cfg: VetConfig, repeats: list[float] | None = None) -> Check:
+    """Bumps as strong as the dips, or a sinusoid that explains the dip, mean variability.
+
+    ``repeats``: phase offsets, in durations, at which the search found this
+    period again after masking the transits. Beyond one duration the dimming
+    is not confined to the transits.
+    """
     eph = f.eph
     w = 0.8 * eph.dur_days
     step = eph.dur_days / 4
@@ -420,9 +445,20 @@ def check_variability(f: Folded, cfg: VetConfig) -> Check:
     sin_gain = _sine_gain(f)
     box_gain = (dip.depth / (f.sigma / np.sqrt(max(dip.n_points, 1)))) ** 2 if dip.n_points else 0.0
     # Both gains are white-noise chi^2, so their ratio is fair even when red noise dominates.
-    v = {"dip_snr": dip.snr, "max_bump_snr": max_bump}
+    v = {"dip_snr": dip.snr, "max_bump_snr": max_bump, "repeats_durations": repeats or []}
     if not dip.snr > 0:
         return Check(1, "Not variability", "fail", "no dip at this ephemeris once re-measured", v)
+    off_phase = [r for r in repeats or [] if abs(r) > 1.0]
+    if off_phase:
+        return Check(
+            1,
+            "Not variability",
+            "fail",
+            f"the search finds this period again {len(off_phase)} time(s) after masking the "
+            f"transits, offset by {', '.join(f'{r:+.1f}' for r in off_phase)} durations: "
+            "the dimming is not confined to the transits",
+            v,
+        )
     ratio_bump = max_bump / dip.snr
     ratio_sine = sin_gain / box_gain if box_gain > 0 else float("inf")
     v.update(bump_ratio=ratio_bump, sine_ratio=ratio_sine)
@@ -503,7 +539,7 @@ def check_secondary(f: Folded, cfg: VetConfig) -> Check:
         return Check(3, "No secondary eclipse", "n/a", "period too short to look for one")
     depth, snr = _scan_boxes(f, centers, w, +1.0)
     phases = (centers / p) % 1.0
-    half = away & (np.abs(phases - 0.5) * p < 2 * eph.dur_days)
+    half = away & (np.abs(phases - 0.5) * p < eph.dur_days)
     other = away & ~half
     sparse = len(np.unique(f.epoch[f.in_transit])) <= cfg.sparse_events
 
@@ -615,23 +651,32 @@ def check_radius(fit: dict[str, Any], cfg: VetConfig) -> Check:
 
 
 def check_density(fit: dict[str, Any], cfg: VetConfig) -> Check:
+    """Fitted T14 against the longest transit the TIC star allows (b = 0, circular).
+
+    The fitted density itself is reported but not judged: at low SNR the
+    b-a/R* degeneracy leaves it poorly bound, while T14 is measured directly.
+    """
     if not fit.get("ok") or not np.isfinite(fit.get("rho_tic_cgs", np.nan)):
         return Check(8, "Duration fits the star", "n/a", "no fit or no TIC mass/radius")
-    r = fit["rho_fit_cgs"] / fit["rho_tic_cgs"]
-    v = {"rho_fit_cgs": fit["rho_fit_cgs"], "rho_tic_cgs": fit["rho_tic_cgs"], "ratio": r}
+    p_s = fit["period_days"] * 86400.0
+    a_tic = (G_CGS * fit["rho_tic_cgs"] * p_s**2 / (3 * np.pi)) ** (1 / 3)
+    t14_max = _t14(fit["period_days"], fit["rp_rs"], a_tic, 0.0) * 24
+    ratio = fit["t14_hours"] / t14_max if t14_max > 0 else float("inf")
+    v = {
+        "t14_hours": fit["t14_hours"],
+        "t14_max_hours": t14_max,
+        "ratio": ratio,
+        "rho_fit_cgs": fit["rho_fit_cgs"],
+        "rho_tic_cgs": fit["rho_tic_cgs"],
+    }
     text = (
-        f"stellar density from the transit {fit['rho_fit_cgs']:.2f} g/cm³ vs TIC "
-        f"{fit['rho_tic_cgs']:.2f} (×{r:.2g})"
+        f"T14 {fit['t14_hours']:.1f} h vs at most {t14_max:.1f} h for this star "
+        f"(fitted density {fit['rho_fit_cgs']:.2f} g/cm³, TIC {fit['rho_tic_cgs']:.2f})"
     )
-    # Duration scales as rho^(-1/3): a factor 8 in density is a factor 2 in duration.
-    if r < 1 / cfg.max_density_factor:
-        return Check(
-            8, "Duration fits the star", "fail", text + ": transit too long for this star", v
-        )
-    if r > cfg.max_density_factor and not fit["grazing"]:
-        return Check(
-            8, "Duration fits the star", "warn", text + ": short (eccentric or wrong host?)", v
-        )
+    if ratio > cfg.max_duration_factor:
+        return Check(8, "Duration fits the star", "fail", text + ": too long", v)
+    if ratio > 1.15:
+        return Check(8, "Duration fits the star", "warn", text, v)
     return Check(8, "Duration fits the star", "pass", text, v)
 
 
