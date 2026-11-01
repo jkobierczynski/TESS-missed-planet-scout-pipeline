@@ -54,12 +54,14 @@ directory` means those headers are missing. On native Windows, batman needs the
 Microsoft C++ Build Tools; WSL avoids that.
 
 `config/cvz-north-t10.toml` covers the 1,726 northern-CVZ dwarfs with Tmag
-8.8–10 (the 500 brighter ones were run as `cvz-north`). Stop it any time with
-Ctrl-C, or let the machine sleep: the same command continues where it stopped,
-and failed downloads are retried. By default it uses half your CPU cores
-(`--workers N` to change). A 4-core machine did about 100 stars an hour, and
-each star keeps about 11 MB in `results/`, so this run needs about 20 GB of
-disk. `--limit 50` makes a quick trial run on the 50 brightest stars.
+8.8–10 (the 500 brighter ones were run as `cvz-north`), and
+`config/cvz-north-t11.toml` the roughly 4,300 with Tmag 10–11. Stop a run any
+time with Ctrl-C, or let the machine sleep: the same command continues where it
+stopped, and failed downloads are retried. By default it uses half your CPU
+cores (`--workers N` to change). A desktop did the 1,726-star run in about
+2.5 hours. Each star keeps about 11 MB in `results/`, so plan on about 20 GB of
+disk for `cvz-north-t10` and about 50 GB for `cvz-north-t11`.
+`--limit 50` makes a quick trial run on the 50 brightest stars.
 
 When it finishes, open `results/cvz-north-t10/vet_summary.html`. Signals with
 the verdict `candidate` or `review` then get their false-positive probability:
