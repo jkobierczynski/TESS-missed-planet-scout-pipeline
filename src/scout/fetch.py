@@ -94,7 +94,33 @@ def _require_astroquery(timeout_s: float | None = None) -> Any:
             ):
                 if target is not None and hasattr(target, "TIMEOUT"):
                     target.TIMEOUT = timeout_s
+            _default_timeout(getattr(obj, "_session", None), timeout_s)
     return Catalogs, Observations
+
+
+# Seconds to wait for MAST to accept a connection. Without a limit, a dropped
+# connection attempt can block a worker for hours.
+_CONNECT_TIMEOUT_S = 30.0
+
+
+def _default_timeout(session: Any, read_timeout_s: float) -> None:
+    """Give every request on ``session`` a timeout unless the caller sets one.
+
+    ``Observations.download_file`` passes no timeout, and requests then waits
+    forever for a connection or for the next byte.
+    """
+    if session is None or getattr(session, "_scout_timeout", None) == read_timeout_s:
+        return
+    request = getattr(session, "_scout_request", None) or session.request
+
+    def request_with_timeout(*args: Any, **kwargs: Any) -> Any:
+        if kwargs.get("timeout") is None:
+            kwargs["timeout"] = (_CONNECT_TIMEOUT_S, read_timeout_s)
+        return request(*args, **kwargs)
+
+    session._scout_request = request
+    session._scout_timeout = read_timeout_s
+    session.request = request_with_timeout
 
 
 # Delays before the 2nd, 3rd, ... attempt of a MAST call. Connections through

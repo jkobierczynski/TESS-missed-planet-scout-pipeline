@@ -152,3 +152,24 @@ def test_select_restricted_to_configured_sectors():
     cfg = FetchConfig(sectors=(14, 16))
     chosen = select_products([cand(s, "SPOC", 120) for s in (14, 15, 16, 17)], cfg)
     assert [p.sector for p in chosen] == [14, 16]
+
+
+def test_mast_requests_get_a_timeout():
+    from scout.fetch import _CONNECT_TIMEOUT_S, _default_timeout
+
+    class Session:
+        def __init__(self):
+            self.calls = []
+
+        def request(self, method, url, **kwargs):
+            self.calls.append(kwargs.get("timeout"))
+
+    s = Session()
+    _default_timeout(s, 300.0)
+    _default_timeout(s, 300.0)  # applying it again does not wrap twice
+    s.request("GET", "u")
+    s.request("GET", "u", timeout=5)
+    assert s.calls == [(_CONNECT_TIMEOUT_S, 300.0), 5]
+    _default_timeout(s, 60.0)
+    s.request("GET", "u")
+    assert s.calls[-1] == (_CONNECT_TIMEOUT_S, 60.0)
